@@ -1,0 +1,129 @@
+# VibeMon Docker Compose - Development Environment
+version: '3.8'
+
+services:
+  # PostgreSQL with TimescaleDB
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: vibemon-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vibemon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: vibemon-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  api:
+    build:
+      context: ./backend/api
+      dockerfile: Dockerfile
+    container_name: vibemon-api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/vibemon
+      REDIS_URL: redis://redis:6379/0
+      DEBUG: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/api:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # WebSocket Server (Go)
+  websocket:
+    build:
+      context: ./backend/websocket
+      dockerfile: Dockerfile
+    container_name: vibemon-websocket
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://postgres:postgres@db:5432/vibemon
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+      - db
+
+  # ML Service
+  ml:
+    build:
+      context: ./backend/ml
+      dockerfile: Dockerfile
+    container_name: vibemon-ml
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/vibemon
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./backend/ml:/app
+      - ml_models:/app/models
+    depends_on:
+      - db
+      - redis
+
+  # Admin Panel (Next.js)
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    container_name: vibemon-admin
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_WS_URL: ws://localhost:8001
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./admin:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - api
+
+  # Celery Worker
+  worker:
+    build:
+      context: ./backend/api
+      dockerfile: Dockerfile
+    container_name: vibemon-worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/vibemon
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend/api:/app
+    depends_on:
+      - db
+      - redis
+    command: celery -A app.worker worker --loglevel=info
+
+volumes:
+  postgres_data:
+  redis_data:
+  ml_models:
