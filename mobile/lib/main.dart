@@ -972,44 +972,97 @@ class _FrequencyDiagnostic extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String diagnosis = '';
+    // Диагностика основана на реальной вибродиагностике
+    // Предполагаем типичный двигатель ~3000 об/мин (50 Гц основная частота)
+    // 1x = дисбаланс, 2x = несоосность, дробные = ослабление
+    
+    List<String> diagnoses = [];
     IconData icon = Icons.help;
     Color color = Colors.grey;
 
-    if (freq < 10) {
-      diagnosis = 'Низкочастотная вибрация - проверьте крепления';
+    // Анализ по характерным частотам
+    if (freq > 0 && freq < 5) {
+      diagnoses.add('Очень низкая частота - возможны внешние воздействия или люфт');
       icon = Icons.foundation;
       color = Colors.brown;
-    } else if (freq < 30) {
-      diagnosis = 'Возможен дисбаланс ротора';
-      icon = Icons.rotate_right;
+    } else if (freq >= 5 && freq < 15) {
+      // Субгармоники - ослабление, люфт
+      diagnoses.add('Субгармоника (0.5x) - ослабление крепления или масляный вихрь');
+      icon = Icons.build_circle;
       color = Colors.orange;
-    } else if (freq < 60) {
-      diagnosis = 'Вращающиеся компоненты - норма для двигателей';
-      icon = Icons.settings;
-      color = Colors.green;
-    } else if (freq < 120) {
-      diagnosis = 'Возможны проблемы с подшипниками';
-      icon = Icons.warning;
+    } else if (freq >= 15 && freq < 35) {
+      // ~25 Гц = 1500 об/мин или 0.5x от 3000
+      diagnoses.add('Область 1x (1500-2100 об/мин) - проверьте балансировку');
+      icon = Icons.rotate_right;
       color = Colors.amber;
-    } else {
-      diagnosis = 'Высокочастотная вибрация - износ деталей';
-      icon = Icons.build;
+    } else if (freq >= 35 && freq < 70) {
+      // ~50 Гц = 3000 об/мин (1x) или сетевая частота
+      if (freq >= 48 && freq <= 52) {
+        diagnoses.add('50 Гц - частота сети или 1x при 3000 об/мин');
+        diagnoses.add('Если 1x: дисбаланс ротора');
+      } else {
+        diagnoses.add('Область 1x (2100-4200 об/мин) - дисбаланс');
+      }
+      icon = Icons.electric_bolt;
+      color = Colors.blue;
+    } else if (freq >= 70 && freq < 110) {
+      // ~100 Гц = 2x от 3000 или 2x сети
+      diagnoses.add('Область 2x - несоосность валов или электромагнитные силы');
+      icon = Icons.settings;
+      color = Colors.orange;
+    } else if (freq >= 110 && freq < 200) {
+      // Высшие гармоники
+      diagnoses.add('Высшие гармоники (3x-4x) - возможен износ муфты или резонанс');
+      icon = Icons.waves;
+      color = Colors.amber;
+    } else if (freq >= 200) {
+      // Высокочастотная область - подшипники, шестерни
+      diagnoses.add('Высокочастотная область - дефекты подшипников или зубчатых передач');
+      icon = Icons.precision_manufacturing;
       color = Colors.red;
     }
 
+    // Анализ Crest Factor (пик-фактор)
     if (crestFactor > 6) {
-      diagnosis += '\n⚠️ Высокий Crest Factor - возможны удары/дефекты подшипников';
-      color = Colors.orange;
+      diagnoses.add('⚠️ CF > 6: импульсные удары - ранняя стадия дефекта подшипника');
+      color = Colors.red;
+      icon = Icons.warning;
+    } else if (crestFactor > 4) {
+      diagnoses.add('CF 4-6: повышенные пики - контролируйте состояние');
+      if (color != Colors.red) color = Colors.orange;
+    } else if (crestFactor >= 1.4 && crestFactor <= 1.5) {
+      diagnoses.add('CF ~1.41: чистая синусоида - вероятен дисбаланс');
     }
 
-    return Row(
+    String fullDiagnosis = diagnoses.join('\n');
+
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, color: color, size: 20),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(diagnosis, style: TextStyle(color: color)),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(fullDiagnosis, style: TextStyle(color: color, fontSize: 13)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Text(
+            '💡 Точная диагностика требует знания RPM оборудования:\n'
+            '• 1x RPM/60 = дисбаланс\n'
+            '• 2x RPM/60 = несоосность\n'
+            '• Дробные гармоники = ослабление',
+            style: TextStyle(fontSize: 11, color: Colors.black54),
+          ),
         ),
       ],
     );
