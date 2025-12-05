@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:intl/intl.dart';
 
 void main() {
   runApp(const VibemonApp());
@@ -143,8 +148,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool isScanning = false;
   bool isConnected = false;
   bool isAdvancedFirmware = false;
+  bool isRecording = false;
   BluetoothDevice? connectedDevice;
   List<ScanResult> scanResults = [];
+  
+  // Запись данных
+  String? currentSessionName;
+  List<SensorDataFull> recordedData = [];
+  DateTime? recordingStartTime;
   
   // Данные с датчиков
   double temperature = 0.0;
@@ -165,7 +176,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _requestPermissions();
   }
 
@@ -336,8 +347,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   void _addToHistory() {
+    final now = DateTime.now();
     history.add(SensorData(
-      timestamp: DateTime.now(),
+      timestamp: now,
       temperature: temperature,
       rms: vibration.rms,
       rmsVelocity: vibration.rmsVelocity,
@@ -345,6 +357,228 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     ));
     if (history.length > 100) {
       history.removeAt(0);
+    }
+    
+    // Если идёт запись - добавляем полные данные
+    if (isRecording) {
+      recordedData.add(SensorDataFull(
+        timestamp: now,
+        temperature: temperature,
+        rms: vibration.rms,
+        rmsVelocity: vibration.rmsVelocity,
+        peak: vibration.peak,
+        peakToPeak: vibration.peakToPeak,
+        crestFactor: vibration.crestFactor,
+        dominantFreq: vibration.dominantFreq,
+        dominantAmp: vibration.dominantAmp,
+        status: vibration.status,
+        spectrumBands: List.from(spectrum.bands),
+      ));
+    }
+  }
+
+  // ========== ЗАПИСЬ И ЭКСПОРТ ==========
+  void _startRecording() {
+    final formatter = DateFormat('yyyy-MM-dd_HH-mm-ss');
+    setState(() {
+      isRecording = true;
+      recordingStartTime = DateTime.now();
+      currentSessionName = 'session_${formatter.format(recordingStartTime!)}';
+      recordedData.clear();
+    });
+    _showSnackBar('🔴 Запись начата');
+  }
+
+  void _stopRecording() {
+    setState(() {
+      isRecording = false;
+    });
+    _showSnackBar('⏹️ Запись остановлена (${recordedData.length} записей)');
+  }
+
+  Future<void> _exportToCSV() async {
+    if (recordedData.isEmpty) {
+      _showSnackBar('Нет данных для экспорта');
+      return;
+    }
+
+    try {
+      // Заголовок CSV
+      StringBuffer csv = StringBuffer();
+      csv.writeln('timestamp,temperature_c,rms_g,rms_velocity_mm_s,peak_g,peak_to_peak_g,crest_factor,dominant_freq_hz,dominant_amp,status,band_0_31hz,band_31_62hz,band_62_125hz,band_125_187hz,band_187_250hz,band_250_312hz,band_312_375hz,band_375_500hz');
+
+      // Данные
+      for (var data in recordedData) {
+        csv.writeln(
+          '${data.timestamp.toIso8601String()},'
+          '${data.temperature.toStringAsFixed(2)},'
+          '${data.rms.toStringAsFixed(6)},'
+          '${data.rmsVelocity.toStringAsFixed(4)},'
+          '${data.peak.toStringAsFixed(6)},'
+          '${data.peakToPeak.toStringAsFixed(6)},'
+          '${data.crestFactor.toStringAsFixed(4)},'
+          '${data.dominantFreq.toStringAsFixed(2)},'
+          '${data.dominantAmp.toStringAsFixed(6)},'
+          '${data.status},'
+          '${data.spectrumBands.map((b) => b.toStringAsFixed(6)).join(',')}'
+        );
+      }
+
+      // Сохраняем файл
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/${currentSessionName ?? 'export'}.csv');
+      await file.writeAsString(csv.toString());
+
+      // Делимся файлом
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'VibeMon Data Export',
+        text: 'Данные вибрации: ${recordedData.length} записей',
+      );
+
+      _showSnackBar('✅ CSV экспортирован');
+    } catch (e) {
+      _showSnackBar('Ошибка экспорта: $e');
+    }
+  }
+
+  Future<void> _exportToJSON() async {
+    if (recordedData.isEmpty) {
+      _showSnackBar('Нет данных для экспорта');
+      return;
+    }
+
+    try {
+      Map<String, dynamic> jsonData = {
+        'session': currentSessionName,
+        'device': connectedDevice?.platformName ?? 'Unknown',
+        'start_time': recordingStartTime?.toIso8601String(),
+        'end_time': DateTime.now().toIso8601String(),
+        'total_records': recordedData.length,
+        'firmware': isAdvancedFirmware ? 'advanced' : 'basic',
+        'data': recordedData.map((d) => {
+          return {
+            'timestamp': d.timestamp.toIso8601String(),
+            'temperature': d.temperature,
+            'vibration': {
+              'rms_g': d.rms,
+              'rms_velocity_mm_s': d.rmsVelocity,
+              'peak_g': d.peak,
+              'peak_to_peak_g': d.peakToPeak,
+              'crest_factor': d.crestFactor,
+              'dominant_freq_hz': d.dominantFreq,
+              'dominant_amp': d.dominantAmp,
+              'status': d.status,
+            },
+            'spectrum_bands': d.spectrumBands,
+          };
+        }).toList(),
+      };
+
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/${currentSessionName ?? 'export'}.json');
+      await file.writeAsString(const JsonEncoder.withIndent('  ').convert(jsonData));
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'VibeMon Data Export (JSON)',
+        text: 'Данные вибрации: ${recordedData.length} записей',
+      );
+
+      _showSnackBar('✅ JSON экспортирован');
+    } catch (e) {
+      _showSnackBar('Ошибка экспорта: $e');
+    }
+  }
+
+  Future<void> _saveSession() async {
+    if (recordedData.isEmpty) {
+      _showSnackBar('Нет данных для сохранения');
+      return;
+    }
+
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final sessionsDir = Directory('${directory.path}/sessions');
+      if (!await sessionsDir.exists()) {
+        await sessionsDir.create(recursive: true);
+      }
+
+      Map<String, dynamic> sessionData = {
+        'session': currentSessionName,
+        'device': connectedDevice?.platformName ?? 'Unknown',
+        'start_time': recordingStartTime?.toIso8601String(),
+        'end_time': DateTime.now().toIso8601String(),
+        'total_records': recordedData.length,
+        'data': recordedData.map((d) => d.toJson()).toList(),
+      };
+
+      final file = File('${sessionsDir.path}/${currentSessionName}.json');
+      await file.writeAsString(jsonEncode(sessionData));
+
+      _showSnackBar('💾 Сессия сохранена');
+    } catch (e) {
+      _showSnackBar('Ошибка сохранения: $e');
+    }
+  }
+
+  Future<List<String>> _getSavedSessions() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final sessionsDir = Directory('${directory.path}/sessions');
+      if (!await sessionsDir.exists()) {
+        return [];
+      }
+      
+      final files = await sessionsDir.list().toList();
+      return files
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.json'))
+          .map((f) => f.path.split('/').last.replaceAll('.json', ''))
+          .toList()
+        ..sort((a, b) => b.compareTo(a)); // Новые сверху
+    } catch (e) {
+      return [];
+    }
+  }
+
+  Future<void> _loadSession(String sessionName) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/sessions/$sessionName.json');
+      
+      if (!await file.exists()) {
+        _showSnackBar('Сессия не найдена');
+        return;
+      }
+
+      final content = await file.readAsString();
+      final json = jsonDecode(content);
+
+      setState(() {
+        currentSessionName = json['session'];
+        recordingStartTime = DateTime.tryParse(json['start_time'] ?? '');
+        recordedData = (json['data'] as List)
+            .map((d) => SensorDataFull.fromJson(d))
+            .toList();
+      });
+
+      _showSnackBar('📂 Загружена сессия: ${recordedData.length} записей');
+    } catch (e) {
+      _showSnackBar('Ошибка загрузки: $e');
+    }
+  }
+
+  Future<void> _deleteSession(String sessionName) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/sessions/$sessionName.json');
+      if (await file.exists()) {
+        await file.delete();
+        _showSnackBar('🗑️ Сессия удалена');
+      }
+    } catch (e) {
+      _showSnackBar('Ошибка удаления: $e');
     }
   }
 
@@ -378,7 +612,31 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(isAdvancedFirmware ? 'VibeMon Pro' : 'VibeMon'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(isAdvancedFirmware ? 'VibeMon Pro' : 'VibeMon'),
+            if (isRecording) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.red,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.fiber_manual_record, color: Colors.white, size: 12),
+                    const SizedBox(width: 4),
+                    Text('REC ${recordedData.length}', 
+                      style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           if (isConnected)
@@ -396,9 +654,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ],
         bottom: isConnected ? TabBar(
           controller: _tabController,
+          isScrollable: true,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard), text: 'Обзор'),
             Tab(icon: Icon(Icons.bar_chart), text: 'Спектр'),
+            Tab(icon: Icon(Icons.save), text: 'Запись'),
             Tab(icon: Icon(Icons.history), text: 'История'),
           ],
         ) : null,
@@ -409,6 +669,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               children: [
                 _buildOverviewTab(),
                 _buildSpectrumTab(),
+                _buildRecordingTab(),
                 _buildHistoryTab(),
               ],
             )
@@ -713,6 +974,229 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       Colors.red,
     ];
     return colors[index];
+  }
+
+  // ========== ВКЛАДКА ЗАПИСЬ ==========
+  Widget _buildRecordingTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Панель управления записью
+          Card(
+            color: isRecording ? Colors.red.shade50 : Colors.green.shade50,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  Icon(
+                    isRecording ? Icons.stop_circle : Icons.fiber_manual_record,
+                    size: 64,
+                    color: isRecording ? Colors.red : Colors.green,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isRecording ? 'Запись идёт' : 'Запись остановлена',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: isRecording ? Colors.red : Colors.green,
+                    ),
+                  ),
+                  if (isRecording && recordingStartTime != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Начало: ${DateFormat('HH:mm:ss').format(recordingStartTime!)}',
+                      style: TextStyle(color: Colors.grey.shade600),
+                    ),
+                    Text(
+                      'Записей: ${recordedData.length}',
+                      style: TextStyle(color: Colors.grey.shade600),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: isRecording ? _stopRecording : _startRecording,
+                        icon: Icon(isRecording ? Icons.stop : Icons.fiber_manual_record),
+                        label: Text(isRecording ? 'Остановить' : 'Начать запись'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isRecording ? Colors.red : Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Экспорт данных
+          if (recordedData.isNotEmpty) ...[
+            const Text('Экспорт записанных данных',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 8),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Сессия: ${currentSessionName ?? "Без имени"}'),
+                    Text('Записей: ${recordedData.length}'),
+                    if (recordingStartTime != null)
+                      Text('Длительность: ${_getDuration()}'),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _exportToCSV,
+                            icon: const Icon(Icons.table_chart),
+                            label: const Text('CSV'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _exportToJSON,
+                            icon: const Icon(Icons.code),
+                            label: const Text('JSON'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _saveSession,
+                            icon: const Icon(Icons.save),
+                            label: const Text('Сохранить'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 24),
+
+          // Сохранённые сессии
+          const Text('Сохранённые сессии',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 8),
+          FutureBuilder<List<String>>(
+            future: _getSavedSessions(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                return Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Center(
+                      child: Text(
+                        'Нет сохранённых сессий',
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              return Card(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: snapshot.data!.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final sessionName = snapshot.data![index];
+                    return ListTile(
+                      leading: const Icon(Icons.folder),
+                      title: Text(sessionName),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.upload),
+                            onPressed: () => _loadSession(sessionName),
+                            tooltip: 'Загрузить',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Удалить сессию?'),
+                                  content: Text('Удалить "$sessionName"?'),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, false),
+                                      child: const Text('Отмена'),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, true),
+                                      child: const Text('Удалить', 
+                                        style: TextStyle(color: Colors.red)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true) {
+                                await _deleteSession(sessionName);
+                                setState(() {});
+                              }
+                            },
+                            tooltip: 'Удалить',
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
+          ),
+
+          const SizedBox(height: 24),
+
+          // Справка по форматам
+          Card(
+            color: Colors.blue.shade50,
+            child: const Padding(
+              padding: EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('📊 Форматы экспорта:',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  SizedBox(height: 8),
+                  Text('• CSV - для Excel, Python (pandas), MATLAB'),
+                  Text('• JSON - для программного анализа'),
+                  SizedBox(height: 8),
+                  Text('Данные включают: температуру, RMS, скорость,\nпик, crest factor, частоты, спектр FFT',
+                      style: TextStyle(fontSize: 12, color: Colors.black54)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getDuration() {
+    if (recordingStartTime == null) return '';
+    final duration = DateTime.now().difference(recordingStartTime!);
+    return '${duration.inMinutes}м ${duration.inSeconds % 60}с';
   }
 
   // ========== ВКЛАДКА ИСТОРИЯ ==========
@@ -1083,4 +1567,65 @@ class SensorData {
     required this.rmsVelocity,
     required this.status,
   });
+}
+
+// Полные данные для записи и экспорта
+class SensorDataFull {
+  final DateTime timestamp;
+  final double temperature;
+  final double rms;
+  final double rmsVelocity;
+  final double peak;
+  final double peakToPeak;
+  final double crestFactor;
+  final double dominantFreq;
+  final double dominantAmp;
+  final int status;
+  final List<double> spectrumBands;
+
+  SensorDataFull({
+    required this.timestamp,
+    required this.temperature,
+    required this.rms,
+    required this.rmsVelocity,
+    required this.peak,
+    required this.peakToPeak,
+    required this.crestFactor,
+    required this.dominantFreq,
+    required this.dominantAmp,
+    required this.status,
+    required this.spectrumBands,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'timestamp': timestamp.toIso8601String(),
+    'temperature': temperature,
+    'rms': rms,
+    'rms_velocity': rmsVelocity,
+    'peak': peak,
+    'peak_to_peak': peakToPeak,
+    'crest_factor': crestFactor,
+    'dominant_freq': dominantFreq,
+    'dominant_amp': dominantAmp,
+    'status': status,
+    'spectrum_bands': spectrumBands,
+  };
+
+  factory SensorDataFull.fromJson(Map<String, dynamic> json) {
+    return SensorDataFull(
+      timestamp: DateTime.parse(json['timestamp']),
+      temperature: (json['temperature'] ?? 0).toDouble(),
+      rms: (json['rms'] ?? 0).toDouble(),
+      rmsVelocity: (json['rms_velocity'] ?? 0).toDouble(),
+      peak: (json['peak'] ?? 0).toDouble(),
+      peakToPeak: (json['peak_to_peak'] ?? 0).toDouble(),
+      crestFactor: (json['crest_factor'] ?? 0).toDouble(),
+      dominantFreq: (json['dominant_freq'] ?? 0).toDouble(),
+      dominantAmp: (json['dominant_amp'] ?? 0).toDouble(),
+      status: json['status'] ?? 0,
+      spectrumBands: (json['spectrum_bands'] as List?)
+          ?.map((e) => (e as num).toDouble())
+          .toList() ?? List.filled(8, 0.0),
+    );
+  }
 }
