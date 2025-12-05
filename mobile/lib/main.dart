@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const VibemonApp());
@@ -29,7 +33,230 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  int _selectedIndex = 0;
+  // BLE UUIDs - должны совпадать с ESP32
+  static const String serviceUuid = "12345678-1234-5678-1234-56789abcdef0";
+  static const String tempCharUuid = "12345678-1234-5678-1234-56789abcdef1";
+  static const String vibrationCharUuid = "12345678-1234-5678-1234-56789abcdef2";
+
+  // Состояние
+  bool isScanning = false;
+  bool isConnected = false;
+  BluetoothDevice? connectedDevice;
+  List<ScanResult> scanResults = [];
+  
+  // Данные с датчиков
+  double temperature = 0.0;
+  double vibration = 0.0;
+  DateTime? lastUpdate;
+  
+  // История данных для графика
+  List<SensorData> history = [];
+  
+  // Подписки
+  StreamSubscription<List<ScanResult>>? scanSubscription;
+  StreamSubscription<BluetoothConnectionState>? connectionSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _requestPermissions();
+  }
+
+  @override
+  void dispose() {
+    scanSubscription?.cancel();
+    connectionSubscription?.cancel();
+    _disconnect();
+    super.dispose();
+  }
+
+  Future<void> _requestPermissions() async {
+    await [
+      Permission.bluetooth,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+  }
+
+  Future<void> _startScan() async {
+    if (isScanning) return;
+
+    setState(() {
+      isScanning = true;
+      scanResults.clear();
+    });
+
+    try {
+      // Проверяем включен ли Bluetooth
+      if (await FlutterBluePlus.isSupported == false) {
+        _showSnackBar('Bluetooth не поддерживается');
+        return;
+      }
+
+      // Включаем Bluetooth если выключен
+      if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
+        _showSnackBar('Пожалуйста, включите Bluetooth');
+        setState(() => isScanning = false);
+        return;
+      }
+
+      // Подписываемся на результаты сканирования
+      scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+        setState(() {
+          scanResults = results.where((r) => 
+            r.device.platformName.contains('VibeMon') ||
+            r.device.platformName.contains('ESP32') ||
+            r.advertisementData.serviceUuids.any((uuid) => 
+              uuid.toString().toLowerCase() == serviceUuid.toLowerCase()
+            )
+          ).toList();
+        });
+      });
+
+      // Начинаем сканирование
+      await FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 10),
+        withServices: [Guid(serviceUuid)],
+      );
+
+    } catch (e) {
+      _showSnackBar('Ошибка сканирования: $e');
+    } finally {
+      setState(() => isScanning = false);
+    }
+  }
+
+  Future<void> _stopScan() async {
+    await FlutterBluePlus.stopScan();
+    setState(() => isScanning = false);
+  }
+
+  Future<void> _connect(BluetoothDevice device) async {
+    try {
+      _showSnackBar('Подключение к ${device.platformName}...');
+      
+      await device.connect(timeout: const Duration(seconds: 10));
+      
+      // Подписываемся на состояние подключения
+      connectionSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          setState(() {
+            isConnected = false;
+            connectedDevice = null;
+          });
+          _showSnackBar('Устройство отключено');
+        }
+      });
+
+      setState(() {
+        isConnected = true;
+        connectedDevice = device;
+      });
+
+      _showSnackBar('Подключено к ${device.platformName}');
+
+      // Обнаруживаем сервисы
+      await _discoverServices(device);
+
+    } catch (e) {
+      _showSnackBar('Ошибка подключения: $e');
+      setState(() {
+        isConnected = false;
+        connectedDevice = null;
+      });
+    }
+  }
+
+  Future<void> _discoverServices(BluetoothDevice device) async {
+    try {
+      List<BluetoothService> services = await device.discoverServices();
+      
+      for (BluetoothService service in services) {
+        if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+          for (BluetoothCharacteristic char in service.characteristics) {
+            String charUuid = char.uuid.toString().toLowerCase();
+            
+            if (charUuid == tempCharUuid.toLowerCase()) {
+              // Подписываемся на температуру
+              await char.setNotifyValue(true);
+              char.onValueReceived.listen((value) {
+                if (value.length >= 4) {
+                  ByteData byteData = ByteData.sublistView(Uint8List.fromList(value));
+                  double temp = byteData.getFloat32(0, Endian.little);
+                  setState(() {
+                    temperature = temp;
+                    lastUpdate = DateTime.now();
+                    _addToHistory();
+                  });
+                }
+              });
+            }
+            
+            if (charUuid == vibrationCharUuid.toLowerCase()) {
+              // Подписываемся на вибрацию
+              await char.setNotifyValue(true);
+              char.onValueReceived.listen((value) {
+                if (value.length >= 4) {
+                  ByteData byteData = ByteData.sublistView(Uint8List.fromList(value));
+                  double vib = byteData.getFloat32(0, Endian.little);
+                  setState(() {
+                    vibration = vib;
+                    lastUpdate = DateTime.now();
+                  });
+                }
+              });
+            }
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      _showSnackBar('Ошибка обнаружения сервисов: $e');
+    }
+  }
+
+  void _addToHistory() {
+    history.add(SensorData(
+      timestamp: DateTime.now(),
+      temperature: temperature,
+      vibration: vibration,
+    ));
+    // Храним последние 100 записей
+    if (history.length > 100) {
+      history.removeAt(0);
+    }
+  }
+
+  Future<void> _disconnect() async {
+    if (connectedDevice != null) {
+      await connectedDevice!.disconnect();
+    }
+    setState(() {
+      isConnected = false;
+      connectedDevice = null;
+      temperature = 0.0;
+      vibration = 0.0;
+    });
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  Color _getTempColor(double temp) {
+    if (temp < 50) return Colors.green;
+    if (temp < 70) return Colors.orange;
+    return Colors.red;
+  }
+
+  Color _getVibColor(double vib) {
+    if (vib < 2) return Colors.green;
+    if (vib < 3.5) return Colors.orange;
+    return Colors.red;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,247 +265,237 @@ class _HomePageState extends State<HomePage> {
         title: const Text('VibeMon'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.notifications_outlined),
-            onPressed: () {},
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: () {},
-          ),
-        ],
-      ),
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: const [
-          DevicesPage(),
-          AlertsPage(),
-          AnalyticsPage(),
-          ProfilePage(),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.devices_outlined),
-            selectedIcon: Icon(Icons.devices),
-            label: 'Устройства',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.warning_outlined),
-            selectedIcon: Icon(Icons.warning),
-            label: 'Алерты',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.analytics_outlined),
-            selectedIcon: Icon(Icons.analytics),
-            label: 'Аналитика',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outlined),
-            selectedIcon: Icon(Icons.person),
-            label: 'Профиль',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class DevicesPage extends StatelessWidget {
-  const DevicesPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final devices = [
-      {'name': 'Трактор МТЗ-82 #1', 'status': 'online', 'temp': 45.0, 'vib': 1.2},
-      {'name': 'Элеватор мотор #3', 'status': 'warning', 'temp': 65.0, 'vib': 2.8},
-      {'name': 'Насос датчик #7', 'status': 'online', 'temp': 38.0, 'vib': 0.8},
-      {'name': 'Комбайн #12', 'status': 'critical', 'temp': 78.0, 'vib': 4.5},
-      {'name': 'Генератор #5', 'status': 'offline', 'temp': 0.0, 'vib': 0.0},
-    ];
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: devices.length,
-      itemBuilder: (context, index) {
-        final device = devices[index];
-        return DeviceCard(device: device);
-      },
-    );
-  }
-}
-
-class DeviceCard extends StatelessWidget {
-  final Map<String, dynamic> device;
-  const DeviceCard({super.key, required this.device});
-
-  Color _getStatusColor(String status) {
-    switch (status) {
-      case 'online': return Colors.green;
-      case 'warning': return Colors.orange;
-      case 'critical': return Colors.red;
-      default: return Colors.grey;
-    }
-  }
-
-  String _getStatusText(String status) {
-    switch (status) {
-      case 'online': return 'Онлайн';
-      case 'warning': return 'Внимание';
-      case 'critical': return 'Критично';
-      default: return 'Оффлайн';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final status = device['status'] as String;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Text(device['name'] as String,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: _getStatusColor(status).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(_getStatusText(status),
-                    style: TextStyle(color: _getStatusColor(status), fontSize: 12, fontWeight: FontWeight.w500)),
-                ),
-              ],
+          if (isConnected)
+            IconButton(
+              icon: const Icon(Icons.bluetooth_connected, color: Colors.green),
+              onPressed: _disconnect,
+              tooltip: 'Отключить',
+            )
+          else
+            IconButton(
+              icon: Icon(isScanning ? Icons.bluetooth_searching : Icons.bluetooth),
+              onPressed: isScanning ? _stopScan : _startScan,
+              tooltip: isScanning ? 'Остановить поиск' : 'Найти устройства',
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(child: _MetricTile(icon: Icons.thermostat, label: 'Температура', value: '${device['temp']}°C', color: Colors.red)),
-                const SizedBox(width: 16),
-                Expanded(child: _MetricTile(icon: Icons.vibration, label: 'Вибрация', value: '${device['vib']} g', color: Colors.blue)),
-              ],
-            ),
-          ],
-        ),
+        ],
       ),
+      body: isConnected ? _buildConnectedView() : _buildScanView(),
     );
   }
-}
 
-class _MetricTile extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color color;
-  const _MetricTile({required this.icon, required this.label, required this.value, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildScanView() {
+    return Column(
+      children: [
+        // Статус
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          color: Colors.blue.shade50,
+          child: Column(
             children: [
-              Text(label, style: TextStyle(fontSize: 10, color: color)),
-              Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+              Icon(
+                isScanning ? Icons.bluetooth_searching : Icons.bluetooth_disabled,
+                size: 48,
+                color: isScanning ? Colors.blue : Colors.grey,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isScanning ? 'Поиск устройств...' : 'Нажмите для поиска ESP32',
+                style: const TextStyle(fontSize: 16),
+              ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-}
+        ),
 
-class AlertsPage extends StatelessWidget {
-  const AlertsPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final alerts = [
-      {'device': 'Комбайн #12', 'message': 'Критическая температура: 78°C', 'time': '5 мин назад', 'level': 'critical'},
-      {'device': 'Элеватор мотор #3', 'message': 'Повышенная вибрация: 2.8g', 'time': '15 мин назад', 'level': 'warning'},
-      {'device': 'Трактор МТЗ-82 #1', 'message': 'Температура нормализована', 'time': '1 час назад', 'level': 'info'},
-    ];
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: alerts.length,
-      itemBuilder: (context, index) {
-        final alert = alerts[index];
-        final level = alert['level'] as String;
-        final color = level == 'critical' ? Colors.red : level == 'warning' ? Colors.orange : Colors.blue;
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: color.withOpacity(0.1),
-              child: Icon(level == 'critical' ? Icons.error : level == 'warning' ? Icons.warning : Icons.info, color: color),
+        // Кнопка поиска
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: ElevatedButton.icon(
+            onPressed: isScanning ? _stopScan : _startScan,
+            icon: Icon(isScanning ? Icons.stop : Icons.search),
+            label: Text(isScanning ? 'Остановить' : 'Найти ESP32'),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 48),
             ),
-            title: Text(alert['device'] as String),
-            subtitle: Text(alert['message'] as String),
-            trailing: Text(alert['time'] as String, style: const TextStyle(fontSize: 12, color: Colors.grey)),
           ),
-        );
-      },
+        ),
+
+        // Список найденных устройств
+        Expanded(
+          child: scanResults.isEmpty
+              ? Center(
+                  child: Text(
+                    isScanning ? 'Поиск...' : 'Устройства не найдены',
+                    style: TextStyle(color: Colors.grey.shade600),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: scanResults.length,
+                  itemBuilder: (context, index) {
+                    final result = scanResults[index];
+                    return ListTile(
+                      leading: const CircleAvatar(
+                        backgroundColor: Colors.blue,
+                        child: Icon(Icons.memory, color: Colors.white),
+                      ),
+                      title: Text(result.device.platformName.isNotEmpty
+                          ? result.device.platformName
+                          : 'ESP32 Device'),
+                      subtitle: Text('RSSI: ${result.rssi} dBm'),
+                      trailing: ElevatedButton(
+                        onPressed: () => _connect(result.device),
+                        child: const Text('Подключить'),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
-}
 
-class AnalyticsPage extends StatelessWidget {
-  const AnalyticsPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
+  Widget _buildConnectedView() {
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Статистика за 24 часа', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 16),
-          Row(children: [
-            Expanded(child: _StatCard(title: 'Ср. температура', value: '52.4°C', icon: Icons.thermostat, color: Colors.red)),
-            const SizedBox(width: 12),
-            Expanded(child: _StatCard(title: 'Ср. вибрация', value: '1.8 g', icon: Icons.vibration, color: Colors.blue)),
-          ]),
-          const SizedBox(height: 12),
-          Row(children: [
-            Expanded(child: _StatCard(title: 'Алертов', value: '12', icon: Icons.warning, color: Colors.orange)),
-            const SizedBox(width: 12),
-            Expanded(child: _StatCard(title: 'Устройств онлайн', value: '8/10', icon: Icons.devices, color: Colors.green)),
-          ]),
+          // Статус подключения
+          Card(
+            color: Colors.green.shade50,
+            child: ListTile(
+              leading: const Icon(Icons.bluetooth_connected, color: Colors.green),
+              title: Text(connectedDevice?.platformName ?? 'ESP32'),
+              subtitle: Text(lastUpdate != null
+                  ? 'Обновлено: ${_formatTime(lastUpdate!)}'
+                  : 'Ожидание данных...'),
+              trailing: IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _disconnect,
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Карточки с данными
+          Row(
+            children: [
+              Expanded(
+                child: _DataCard(
+                  title: 'Температура',
+                  value: '${temperature.toStringAsFixed(1)}°C',
+                  icon: Icons.thermostat,
+                  color: _getTempColor(temperature),
+                  subtitle: _getTempStatus(temperature),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _DataCard(
+                  title: 'Вибрация',
+                  value: '${vibration.toStringAsFixed(2)}g',
+                  icon: Icons.vibration,
+                  color: _getVibColor(vibration),
+                  subtitle: _getVibStatus(vibration),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 24),
+
+          // Пороговые значения
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Пороговые значения',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 12),
+                  _ThresholdRow(label: 'Температура', 
+                      values: ['< 50°C', '50-70°C', '> 70°C'],
+                      colors: [Colors.green, Colors.orange, Colors.red]),
+                  const SizedBox(height: 8),
+                  _ThresholdRow(label: 'Вибрация', 
+                      values: ['< 2g', '2-3.5g', '> 3.5g'],
+                      colors: [Colors.green, Colors.orange, Colors.red]),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // История (последние записи)
+          if (history.isNotEmpty) ...[
+            const Text('История показаний',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 8),
+            Card(
+              child: SizedBox(
+                height: 200,
+                child: ListView.builder(
+                  itemCount: history.length > 10 ? 10 : history.length,
+                  itemBuilder: (context, index) {
+                    final data = history[history.length - 1 - index];
+                    return ListTile(
+                      dense: true,
+                      leading: Text(_formatTime(data.timestamp),
+                          style: const TextStyle(fontSize: 12)),
+                      title: Row(
+                        children: [
+                          Icon(Icons.thermostat, size: 16, color: _getTempColor(data.temperature)),
+                          Text(' ${data.temperature.toStringAsFixed(1)}°C'),
+                          const SizedBox(width: 16),
+                          Icon(Icons.vibration, size: 16, color: _getVibColor(data.vibration)),
+                          Text(' ${data.vibration.toStringAsFixed(2)}g'),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
+
+  String _formatTime(DateTime time) {
+    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}:${time.second.toString().padLeft(2, '0')}';
+  }
+
+  String _getTempStatus(double temp) {
+    if (temp < 50) return 'Норма';
+    if (temp < 70) return 'Внимание';
+    return 'Критично!';
+  }
+
+  String _getVibStatus(double vib) {
+    if (vib < 2) return 'Норма';
+    if (vib < 3.5) return 'Внимание';
+    return 'Критично!';
+  }
 }
 
-class _StatCard extends StatelessWidget {
+class _DataCard extends StatelessWidget {
   final String title;
   final String value;
   final IconData icon;
   final Color color;
-  const _StatCard({required this.title, required this.value, required this.icon, required this.color});
+  final String subtitle;
+
+  const _DataCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.color,
+    required this.subtitle,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -286,12 +503,23 @@ class _StatCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icon, color: color),
+            Icon(icon, size: 40, color: color),
             const SizedBox(height: 8),
-            Text(value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
-            Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Text(title, style: const TextStyle(color: Colors.grey)),
+            Text(value, style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: color,
+            )),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(subtitle, style: TextStyle(color: color, fontSize: 12)),
+            ),
           ],
         ),
       ),
@@ -299,27 +527,49 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-class ProfilePage extends StatelessWidget {
-  const ProfilePage({super.key});
+class _ThresholdRow extends StatelessWidget {
+  final String label;
+  final List<String> values;
+  final List<Color> colors;
+
+  const _ThresholdRow({
+    required this.label,
+    required this.values,
+    required this.colors,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          const CircleAvatar(radius: 50, child: Icon(Icons.person, size: 50)),
-          const SizedBox(height: 16),
-          const Text('Администратор', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const Text('admin@vibemon.io', style: TextStyle(color: Colors.grey)),
-          const SizedBox(height: 32),
-          ListTile(leading: const Icon(Icons.business), title: const Text('Организация'), subtitle: const Text('АгроТех Холдинг'), trailing: const Icon(Icons.chevron_right), onTap: () {}),
-          ListTile(leading: const Icon(Icons.notifications), title: const Text('Уведомления'), trailing: const Icon(Icons.chevron_right), onTap: () {}),
-          ListTile(leading: const Icon(Icons.help), title: const Text('Помощь'), trailing: const Icon(Icons.chevron_right), onTap: () {}),
-          const Spacer(),
-          SizedBox(width: double.infinity, child: OutlinedButton.icon(onPressed: () {}, icon: const Icon(Icons.logout), label: const Text('Выйти'))),
-        ],
-      ),
+    return Row(
+      children: [
+        SizedBox(width: 100, child: Text(label)),
+        ...List.generate(values.length, (i) => Expanded(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2),
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            decoration: BoxDecoration(
+              color: colors[i].withOpacity(0.1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(values[i], 
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: colors[i]),
+            ),
+          ),
+        )),
+      ],
     );
   }
+}
+
+class SensorData {
+  final DateTime timestamp;
+  final double temperature;
+  final double vibration;
+
+  SensorData({
+    required this.timestamp,
+    required this.temperature,
+    required this.vibration,
+  });
 }

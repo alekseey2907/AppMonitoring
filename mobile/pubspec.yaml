@@ -1,5 +1,5 @@
 name: vibemon_mobile
-description: VibeMon - Predictive Vibration and Temperature Monitoring System
+description: VibeMon - Мониторинг вибрации и температуры оборудования
 
 publish_to: 'none'
 
@@ -12,6 +12,8 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.6
+  flutter_blue_plus: ^1.31.0
+  permission_handler: ^11.1.0
 
 dev_dependencies:
   flutter_test:
