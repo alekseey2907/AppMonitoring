@@ -456,7 +456,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         'end_time': DateTime.now().toIso8601String(),
         'total_records': recordedData.length,
         'firmware': isAdvancedFirmware ? 'advanced' : 'basic',
-        'data': recordedData.map((d) => {
+        'data': recordedData.map((d) {
           return {
             'timestamp': d.timestamp.toIso8601String(),
             'temperature': d.temperature,
