@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:intl/intl.dart';
+import 'predictive_analytics.dart';
 
 void main() {
   runApp(const VibemonApp());
@@ -166,6 +167,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   // История данных
   List<SensorData> history = [];
   
+  // Предиктивная аналитика
+  final PredictiveAnalytics _analytics = PredictiveAnalytics();
+  HealthAnalysis? _lastAnalysis;
+  bool _isTrainingBaseline = false;
+  List<VibrationSample> _trainingSamples = [];
+  
   // Подписки
   StreamSubscription<List<ScanResult>>? scanSubscription;
   StreamSubscription<BluetoothConnectionState>? connectionSubscription;
@@ -176,8 +183,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
     _requestPermissions();
+    _loadBaseline();
   }
 
   @override
@@ -374,6 +382,27 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         status: vibration.status,
         spectrumBands: List.from(spectrum.bands),
       ));
+    }
+    
+    // Предиктивная аналитика
+    final sample = VibrationSample(
+      rms: vibration.rms,
+      rmsVelocity: vibration.rmsVelocity,
+      peak: vibration.peak,
+      peakToPeak: vibration.peakToPeak,
+      crestFactor: vibration.crestFactor,
+      dominantFreq: vibration.dominantFreq,
+      temperature: temperature,
+    );
+    
+    // Если обучаем baseline - собираем сэмплы
+    if (_isTrainingBaseline) {
+      _trainingSamples.add(sample);
+    }
+    
+    // Если baseline обучен - анализируем
+    if (_analytics.isTrained) {
+      _lastAnalysis = _analytics.analyze(sample);
     }
   }
 
@@ -582,6 +611,77 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  // ========== ПРЕДИКТИВНАЯ АНАЛИТИКА ==========
+  Future<void> _loadBaseline() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/baseline.json');
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        final json = jsonDecode(content);
+        _analytics.importBaseline(json);
+      }
+    } catch (e) {
+      debugPrint('Ошибка загрузки baseline: $e');
+    }
+  }
+
+  Future<void> _saveBaseline() async {
+    try {
+      final baseline = _analytics.exportBaseline();
+      if (baseline == null) return;
+      
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/baseline.json');
+      await file.writeAsString(jsonEncode(baseline));
+      _showSnackBar('💾 Baseline сохранён');
+    } catch (e) {
+      _showSnackBar('Ошибка сохранения baseline: $e');
+    }
+  }
+
+  void _startBaselineTraining() {
+    setState(() {
+      _isTrainingBaseline = true;
+      _trainingSamples.clear();
+    });
+    _showSnackBar('🎓 Начато обучение baseline. Оборудование должно работать в норме!');
+  }
+
+  void _stopBaselineTraining() {
+    if (_trainingSamples.length < 30) {
+      _showSnackBar('⚠️ Недостаточно данных: ${_trainingSamples.length}/30');
+      return;
+    }
+    
+    try {
+      _analytics.trainBaseline(_trainingSamples);
+      _saveBaseline();
+      setState(() {
+        _isTrainingBaseline = false;
+        _trainingSamples.clear();
+      });
+      _showSnackBar('✅ Baseline обучен на ${_trainingSamples.length} сэмплах');
+    } catch (e) {
+      _showSnackBar('Ошибка обучения: $e');
+    }
+  }
+
+  void _resetBaseline() async {
+    _analytics.reset();
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/baseline.json');
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
+    setState(() {
+      _lastAnalysis = null;
+    });
+    _showSnackBar('🔄 Baseline сброшен');
+  }
+
   Future<void> _disconnect() async {
     if (connectedDevice != null) {
       await connectedDevice!.disconnect();
@@ -657,6 +757,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           isScrollable: true,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard), text: 'Обзор'),
+            Tab(icon: Icon(Icons.analytics), text: 'Аналитика'),
             Tab(icon: Icon(Icons.bar_chart), text: 'Спектр'),
             Tab(icon: Icon(Icons.save), text: 'Запись'),
             Tab(icon: Icon(Icons.history), text: 'История'),
@@ -668,6 +769,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               controller: _tabController,
               children: [
                 _buildOverviewTab(),
+                _buildAnalyticsTab(),
                 _buildSpectrumTab(),
                 _buildRecordingTab(),
                 _buildHistoryTab(),
@@ -852,6 +954,265 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
           // ISO 10816 справка
           _ISOReference(currentVelocity: vibration.rmsVelocity),
+        ],
+      ),
+    );
+  }
+
+  // ========== ВКЛАДКА АНАЛИТИКА ==========
+  Widget _buildAnalyticsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Карточка обучения Baseline
+          Card(
+            color: _isTrainingBaseline 
+                ? Colors.orange.shade50 
+                : (_analytics.isTrained ? Colors.green.shade50 : Colors.grey.shade100),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _analytics.isTrained ? Icons.check_circle : Icons.school,
+                        color: _analytics.isTrained ? Colors.green : Colors.orange,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Baseline модель',
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (_analytics.isTrained)
+                    Text('✅ Система обучена и готова к анализу')
+                  else if (_isTrainingBaseline)
+                    Text('🎓 Обучение... Собрано ${_trainingSamples.length} сэмплов (мин. 30)')
+                  else
+                    const Text('❌ Baseline не обучен. Запишите данные при нормальной работе оборудования.'),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      if (!_isTrainingBaseline)
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _startBaselineTraining,
+                            icon: const Icon(Icons.play_arrow),
+                            label: Text(_analytics.isTrained ? 'Переобучить' : 'Начать обучение'),
+                          ),
+                        )
+                      else
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _trainingSamples.length >= 30 ? _stopBaselineTraining : null,
+                            icon: const Icon(Icons.stop),
+                            label: const Text('Завершить'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ),
+                      if (_analytics.isTrained && !_isTrainingBaseline) ...[
+                        const SizedBox(width: 8),
+                        IconButton(
+                          onPressed: _resetBaseline,
+                          icon: const Icon(Icons.delete_forever, color: Colors.red),
+                          tooltip: 'Сбросить baseline',
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Результаты анализа
+          if (_lastAnalysis != null) ...[
+            // Здоровье
+            _HealthCard(analysis: _lastAnalysis!),
+            
+            const SizedBox(height: 12),
+
+            // RUL и тренд
+            Row(
+              children: [
+                Expanded(
+                  child: _CompactDataCard(
+                    title: 'Прогноз RUL',
+                    value: _lastAnalysis!.rulFormatted,
+                    icon: Icons.timer,
+                    color: _lastAnalysis!.predictedRUL != null && 
+                           _lastAnalysis!.predictedRUL!.inHours < 24
+                        ? Colors.red 
+                        : Colors.blue,
+                    subtitle: 'До критического',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _CompactDataCard(
+                    title: 'Тренд',
+                    value: _lastAnalysis!.trend.icon,
+                    icon: Icons.trending_flat,
+                    color: _lastAnalysis!.trend == TrendDirection.degradingFast
+                        ? Colors.red
+                        : _lastAnalysis!.trend == TrendDirection.degrading
+                            ? Colors.orange
+                            : Colors.green,
+                    subtitle: _lastAnalysis!.trend.name,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            // Диагноз
+            Card(
+              color: _lastAnalysis!.defectType != null 
+                  ? Colors.orange.shade50 
+                  : Colors.green.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.medical_information,
+                          color: _lastAnalysis!.defectType != null 
+                              ? Colors.orange 
+                              : Colors.green,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('Диагноз', 
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        if (_lastAnalysis!.defectType != null) ...[
+                          const Spacer(),
+                          Text(
+                            '${_lastAnalysis!.defectType!.icon} ${_lastAnalysis!.defectType!.name}',
+                            style: TextStyle(
+                              color: Colors.orange.shade700,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(_lastAnalysis!.diagnosis, 
+                        style: const TextStyle(fontSize: 16)),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.lightbulb, color: Colors.blue),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _lastAnalysis!.recommendation,
+                              style: const TextStyle(color: Colors.blue),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            // Обнаруженные аномалии
+            if (_lastAnalysis!.anomalies.isNotEmpty)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.warning, color: Colors.orange),
+                          const SizedBox(width: 8),
+                          Text('Аномалии (${_lastAnalysis!.anomalies.length})',
+                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      ..._lastAnalysis!.anomalies.map((anomaly) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: anomaly.severity > 2 ? Colors.red : Colors.orange,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(anomaly.description),
+                            ),
+                          ],
+                        ),
+                      )),
+                    ],
+                  ),
+                ),
+              ),
+          ] else if (_analytics.isTrained)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(32),
+                child: Center(
+                  child: Text('Ожидание данных для анализа...'),
+                ),
+              ),
+            )
+          else
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  children: [
+                    const Icon(Icons.info_outline, size: 48, color: Colors.grey),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Как использовать предиктивный мониторинг:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      '1. Подключите устройство к исправному оборудованию\n'
+                      '2. Нажмите "Начать обучение" и дождитесь сбора 30+ сэмплов\n'
+                      '3. Нажмите "Завершить" для сохранения baseline\n'
+                      '4. Система будет выявлять отклонения и прогнозировать проблемы',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1390,6 +1751,96 @@ class _CompactDataCard extends StatelessWidget {
                     Text(subtitle!, style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HealthCard extends StatelessWidget {
+  final HealthAnalysis analysis;
+
+  const _HealthCard({required this.analysis});
+
+  @override
+  Widget build(BuildContext context) {
+    Color healthColor;
+    if (analysis.overallHealth >= 80) {
+      healthColor = Colors.green;
+    } else if (analysis.overallHealth >= 60) {
+      healthColor = Colors.lightGreen;
+    } else if (analysis.overallHealth >= 40) {
+      healthColor = Colors.amber;
+    } else if (analysis.overallHealth >= 20) {
+      healthColor = Colors.orange;
+    } else {
+      healthColor = Colors.red;
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Здоровье оборудования',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                Text(analysis.healthStatus,
+                    style: TextStyle(
+                        color: healthColor, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Stack(
+              children: [
+                Container(
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                FractionallySizedBox(
+                  widthFactor: analysis.overallHealth / 100,
+                  child: Container(
+                    height: 24,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [healthColor.withOpacity(0.7), healthColor],
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+                Positioned.fill(
+                  child: Center(
+                    child: Text(
+                      '${analysis.overallHealth.toStringAsFixed(0)}%',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Аномалий: ${analysis.anomalies.length}',
+                    style: TextStyle(
+                        color: analysis.anomalies.isEmpty
+                            ? Colors.green
+                            : Colors.orange)),
+                Text('Score: ${analysis.anomalyScore.toStringAsFixed(1)}',
+                    style: const TextStyle(color: Colors.grey)),
+              ],
             ),
           ],
         ),
