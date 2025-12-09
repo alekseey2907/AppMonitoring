@@ -735,6 +735,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     return Colors.red;
   }
 
+  // Открыть просмотр сохранённых записей без подключения
+  void _openRecordingsViewer() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const RecordingsViewerPage(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -834,12 +844,25 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ),
 
         Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: ElevatedButton.icon(
             onPressed: isScanning ? _stopScan : _startScan,
             icon: Icon(isScanning ? Icons.stop : Icons.search),
             label: Text(isScanning ? 'Остановить' : 'Найти ESP32'),
             style: ElevatedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 48),
+            ),
+          ),
+        ),
+
+        // Кнопка просмотра записей без подключения
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: OutlinedButton.icon(
+            onPressed: () => _openRecordingsViewer(),
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Просмотр сохранённых записей'),
+            style: OutlinedButton.styleFrom(
               minimumSize: const Size(double.infinity, 48),
             ),
           ),
@@ -2873,6 +2896,470 @@ class SensorDataFull {
       spectrumBands: (json['spectrum_bands'] as List?)
           ?.map((e) => (e as num).toDouble())
           .toList() ?? List.filled(8, 0.0),
+    );
+  }
+}
+
+// ========== СТРАНИЦА ПРОСМОТРА ЗАПИСЕЙ БЕЗ ПОДКЛЮЧЕНИЯ ==========
+class RecordingsViewerPage extends StatefulWidget {
+  const RecordingsViewerPage({super.key});
+
+  @override
+  State<RecordingsViewerPage> createState() => _RecordingsViewerPageState();
+}
+
+class _RecordingsViewerPageState extends State<RecordingsViewerPage> {
+  List<FileSystemEntity> _recordings = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecordings();
+  }
+
+  Future<void> _loadRecordings() async {
+    setState(() => _isLoading = true);
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final files = directory.listSync()
+          .where((f) => f.path.endsWith('.json') && f.path.contains('vibemon_'))
+          .toList();
+      files.sort((a, b) => b.path.compareTo(a.path)); // Новые сверху
+      setState(() {
+        _recordings = files;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _openRecording(FileSystemEntity file) async {
+    try {
+      final content = await File(file.path).readAsString();
+      final json = jsonDecode(content);
+      
+      final List<SensorDataFull> data = (json['data'] as List)
+          .map((e) => SensorDataFull.fromJson(e))
+          .toList();
+      
+      final sessionName = json['session_name'] ?? 'Без названия';
+      final startTime = json['start_time'] != null 
+          ? DateTime.parse(json['start_time']) 
+          : null;
+      
+      if (!mounted) return;
+      
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => RecordingDetailPage(
+            sessionName: sessionName,
+            startTime: startTime,
+            data: data,
+            filePath: file.path,
+          ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка чтения файла: $e')),
+      );
+    }
+  }
+
+  Future<void> _deleteRecording(FileSystemEntity file) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить запись?'),
+        content: Text('Файл: ${file.path.split('/').last}'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Удалить', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirm == true) {
+      await File(file.path).delete();
+      _loadRecordings();
+    }
+  }
+
+  String _getFileName(FileSystemEntity file) {
+    final name = file.path.split('/').last.split('\\').last;
+    return name.replaceAll('vibemon_', '').replaceAll('.json', '');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Сохранённые записи'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadRecordings,
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _recordings.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.folder_open, size: 64, color: Colors.grey.shade400),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Нет сохранённых записей',
+                        style: TextStyle(fontSize: 18, color: Colors.grey.shade600),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Подключитесь к устройству и\nсделайте запись данных',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey.shade500),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _recordings.length,
+                  itemBuilder: (context, index) {
+                    final file = _recordings[index];
+                    final fileName = _getFileName(file);
+                    
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      child: ListTile(
+                        leading: const CircleAvatar(
+                          backgroundColor: Colors.blue,
+                          child: Icon(Icons.show_chart, color: Colors.white),
+                        ),
+                        title: Text(fileName),
+                        subtitle: FutureBuilder<FileStat>(
+                          future: file.stat(),
+                          builder: (context, snapshot) {
+                            if (!snapshot.hasData) return const Text('...');
+                            final stat = snapshot.data!;
+                            final size = (stat.size / 1024).toStringAsFixed(1);
+                            final date = DateFormat('dd.MM.yyyy HH:mm').format(stat.modified);
+                            return Text('$size KB • $date');
+                          },
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red),
+                              onPressed: () => _deleteRecording(file),
+                            ),
+                            const Icon(Icons.chevron_right),
+                          ],
+                        ),
+                        onTap: () => _openRecording(file),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+// ========== ДЕТАЛЬНЫЙ ПРОСМОТР ЗАПИСИ ==========
+class RecordingDetailPage extends StatelessWidget {
+  final String sessionName;
+  final DateTime? startTime;
+  final List<SensorDataFull> data;
+  final String filePath;
+
+  const RecordingDetailPage({
+    super.key,
+    required this.sessionName,
+    required this.startTime,
+    required this.data,
+    required this.filePath,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Статистика
+    final duration = data.isNotEmpty 
+        ? data.last.timestamp.difference(data.first.timestamp)
+        : Duration.zero;
+    final avgVibration = data.isNotEmpty
+        ? data.map((d) => d.rmsVelocity).reduce((a, b) => a + b) / data.length
+        : 0.0;
+    final maxVibration = data.isNotEmpty
+        ? data.map((d) => d.rmsVelocity).reduce((a, b) => a > b ? a : b)
+        : 0.0;
+    final avgTemp = data.isNotEmpty
+        ? data.map((d) => d.temperature).reduce((a, b) => a + b) / data.length
+        : 0.0;
+    final maxTemp = data.isNotEmpty
+        ? data.map((d) => d.temperature).reduce((a, b) => a > b ? a : b)
+        : 0.0;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(sessionName),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () => _shareFile(context),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Информация о записи
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.info_outline, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        const Text('Информация о записи', 
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    const Divider(),
+                    _InfoRow(label: 'Название', value: sessionName),
+                    if (startTime != null)
+                      _InfoRow(
+                        label: 'Дата', 
+                        value: DateFormat('dd.MM.yyyy HH:mm:ss').format(startTime!),
+                      ),
+                    _InfoRow(label: 'Точек данных', value: '${data.length}'),
+                    _InfoRow(
+                      label: 'Длительность', 
+                      value: '${duration.inMinutes} мин ${duration.inSeconds % 60} сек',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Статистика вибрации
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.vibration, color: Colors.orange),
+                        const SizedBox(width: 8),
+                        const Text('Вибрация', 
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    const Divider(),
+                    _InfoRow(
+                      label: 'Средняя (RMS скорость)', 
+                      value: '${avgVibration.toStringAsFixed(2)} мм/с',
+                    ),
+                    _InfoRow(
+                      label: 'Максимальная', 
+                      value: '${maxVibration.toStringAsFixed(2)} мм/с',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Статистика температуры
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.thermostat, color: Colors.red),
+                        const SizedBox(width: 8),
+                        const Text('Температура', 
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    const Divider(),
+                    _InfoRow(
+                      label: 'Средняя', 
+                      value: '${avgTemp.toStringAsFixed(1)}°C',
+                    ),
+                    _InfoRow(
+                      label: 'Максимальная', 
+                      value: '${maxTemp.toStringAsFixed(1)}°C',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // График вибрации
+            if (data.length > 1) ...[
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('📈 График вибрации', 
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 200,
+                        child: LineChart(
+                          LineChartData(
+                            gridData: FlGridData(show: true),
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (value, meta) => Text(
+                                    value.toStringAsFixed(1),
+                                    style: const TextStyle(fontSize: 10),
+                                  ),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            borderData: FlBorderData(show: true),
+                            lineBarsData: [
+                              LineChartBarData(
+                                spots: data.asMap().entries.map((e) => 
+                                    FlSpot(e.key.toDouble(), e.value.rmsVelocity)).toList(),
+                                isCurved: true,
+                                color: Colors.blue,
+                                barWidth: 2,
+                                dotData: FlDotData(show: false),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 16),
+              
+              // График температуры
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('🌡️ График температуры', 
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 200,
+                        child: LineChart(
+                          LineChartData(
+                            gridData: FlGridData(show: true),
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (value, meta) => Text(
+                                    '${value.toInt()}°',
+                                    style: const TextStyle(fontSize: 10),
+                                  ),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            borderData: FlBorderData(show: true),
+                            lineBarsData: [
+                              LineChartBarData(
+                                spots: data.asMap().entries.map((e) => 
+                                    FlSpot(e.key.toDouble(), e.value.temperature)).toList(),
+                                isCurved: true,
+                                color: Colors.red,
+                                barWidth: 2,
+                                dotData: FlDotData(show: false),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _shareFile(BuildContext context) async {
+    try {
+      await Share.shareXFiles(
+        [XFile(filePath)],
+        subject: 'VibeMon: $sessionName',
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка экспорта: $e')),
+      );
+    }
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _InfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(color: Colors.grey.shade600)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w500)),
+        ],
+      ),
     );
   }
 }
