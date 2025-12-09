@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:intl/intl.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'predictive_analytics.dart';
 
 void main() {
@@ -144,6 +145,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   static const String vibrationCharUuid = "12345678-1234-5678-1234-56789abcdef2";
   static const String spectrumCharUuid = "12345678-1234-5678-1234-56789abcdef3";
   static const String statusCharUuid = "12345678-1234-5678-1234-56789abcdef4";
+  static const String commandCharUuid = "12345678-1234-5678-1234-56789abcdef5";
 
   // Состояние
   bool isScanning = false;
@@ -151,7 +153,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool isAdvancedFirmware = false;
   bool isRecording = false;
   BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? commandCharacteristic;
   List<ScanResult> scanResults = [];
+  
+  // Состояние устройства
+  bool _isCalibrating = false;
+  String _deviceInfo = '';
   
   // Запись данных
   String? currentSessionName;
@@ -183,7 +190,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     _requestPermissions();
     _loadBaseline();
   }
@@ -342,6 +349,26 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     spectrum = SpectrumData.fromBytes(value);
                     isAdvancedFirmware = true;
                   });
+                }
+              });
+            }
+            
+            // Командная характеристика для управления устройством
+            if (charUuid == commandCharUuid.toLowerCase()) {
+              commandCharacteristic = char;
+              // Подписываемся на ответы от устройства
+              await char.setNotifyValue(true);
+              char.onValueReceived.listen((value) {
+                if (value.isNotEmpty) {
+                  // Ответ от устройства (например, JSON с информацией)
+                  try {
+                    String response = String.fromCharCodes(value);
+                    setState(() {
+                      _deviceInfo = response;
+                    });
+                  } catch (e) {
+                    // Бинарный ответ - игнорируем
+                  }
                 }
               });
             }
@@ -757,10 +784,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           isScrollable: true,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard), text: 'Обзор'),
+            Tab(icon: Icon(Icons.show_chart), text: 'Графики'),
             Tab(icon: Icon(Icons.analytics), text: 'Аналитика'),
             Tab(icon: Icon(Icons.bar_chart), text: 'Спектр'),
             Tab(icon: Icon(Icons.save), text: 'Запись'),
             Tab(icon: Icon(Icons.history), text: 'История'),
+            Tab(icon: Icon(Icons.settings), text: 'Настройки'),
           ],
         ) : null,
       ),
@@ -769,10 +798,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               controller: _tabController,
               children: [
                 _buildOverviewTab(),
+                _buildChartsTab(),
                 _buildAnalyticsTab(),
                 _buildSpectrumTab(),
                 _buildRecordingTab(),
                 _buildHistoryTab(),
+                _buildSettingsTab(),
               ],
             )
           : _buildScanView(),
@@ -957,6 +988,374 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ],
       ),
     );
+  }
+
+  // ========== ВКЛАДКА ГРАФИКИ ==========
+  Widget _buildChartsTab() {
+    // Подготовка данных для графиков
+    final vibrationData = history.asMap().entries.map((entry) {
+      return FlSpot(entry.key.toDouble(), entry.value.rmsVelocity);
+    }).toList();
+
+    final temperatureData = history.asMap().entries.map((entry) {
+      return FlSpot(entry.key.toDouble(), entry.value.temperature);
+    }).toList();
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Текущие значения
+          Row(
+            children: [
+              Expanded(
+                child: _CompactDataCard(
+                  title: 'Вибрация',
+                  value: '${vibration.rmsVelocity.toStringAsFixed(2)} мм/с',
+                  icon: Icons.vibration,
+                  color: vibration.statusColor,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _CompactDataCard(
+                  title: 'Температура',
+                  value: '${temperature.toStringAsFixed(1)}°C',
+                  icon: Icons.thermostat,
+                  color: _getTempColor(temperature),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 24),
+
+          // График вибрации
+          const Text(
+            '📊 Вибрация (мм/с)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            height: 200,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: vibrationData.isEmpty
+                ? const Center(child: Text('Нет данных'))
+                : LineChart(
+                    LineChartData(
+                      gridData: FlGridData(
+                        show: true,
+                        drawVerticalLine: false,
+                        horizontalInterval: 2,
+                        getDrawingHorizontalLine: (value) => FlLine(
+                          color: Colors.grey.shade300,
+                          strokeWidth: 1,
+                        ),
+                      ),
+                      titlesData: FlTitlesData(
+                        show: true,
+                        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        leftTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 40,
+                            interval: 2,
+                            getTitlesWidget: (value, meta) {
+                              return Text(
+                                value.toStringAsFixed(0),
+                                style: const TextStyle(fontSize: 10, color: Colors.grey),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                      borderData: FlBorderData(show: false),
+                      minY: 0,
+                      maxY: _getMaxVibration(),
+                      lineBarsData: [
+                        LineChartBarData(
+                          spots: vibrationData,
+                          isCurved: true,
+                          color: _getVibrationLineColor(),
+                          barWidth: 3,
+                          isStrokeCapRound: true,
+                          dotData: const FlDotData(show: false),
+                          belowBarData: BarAreaData(
+                            show: true,
+                            color: _getVibrationLineColor().withOpacity(0.2),
+                          ),
+                        ),
+                        // Пороговые линии ISO 10816
+                        LineChartBarData(
+                          spots: [FlSpot(0, 1.8), FlSpot(history.length.toDouble() - 1, 1.8)],
+                          isCurved: false,
+                          color: Colors.green.withOpacity(0.5),
+                          barWidth: 1,
+                          dashArray: [5, 5],
+                          dotData: const FlDotData(show: false),
+                        ),
+                        LineChartBarData(
+                          spots: [FlSpot(0, 4.5), FlSpot(history.length.toDouble() - 1, 4.5)],
+                          isCurved: false,
+                          color: Colors.orange.withOpacity(0.5),
+                          barWidth: 1,
+                          dashArray: [5, 5],
+                          dotData: const FlDotData(show: false),
+                        ),
+                        LineChartBarData(
+                          spots: [FlSpot(0, 11.2), FlSpot(history.length.toDouble() - 1, 11.2)],
+                          isCurved: false,
+                          color: Colors.red.withOpacity(0.5),
+                          barWidth: 1,
+                          dashArray: [5, 5],
+                          dotData: const FlDotData(show: false),
+                        ),
+                      ],
+                      lineTouchData: LineTouchData(
+                        touchTooltipData: LineTouchTooltipData(
+                          getTooltipItems: (touchedSpots) {
+                            return touchedSpots.map((spot) {
+                              if (spot.barIndex == 0) {
+                                return LineTooltipItem(
+                                  '${spot.y.toStringAsFixed(2)} мм/с',
+                                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                );
+                              }
+                              return null;
+                            }).toList();
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+
+          // Легенда ISO
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _LegendItem(color: Colors.green, label: '< 1.8 Норма'),
+                const SizedBox(width: 12),
+                _LegendItem(color: Colors.orange, label: '< 4.5 Допуст.'),
+                const SizedBox(width: 12),
+                _LegendItem(color: Colors.red, label: '> 11.2 Опасно'),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // График температуры
+          const Text(
+            '🌡️ Температура (°C)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            height: 200,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: temperatureData.isEmpty
+                ? const Center(child: Text('Нет данных'))
+                : LineChart(
+                    LineChartData(
+                      gridData: FlGridData(
+                        show: true,
+                        drawVerticalLine: false,
+                        horizontalInterval: 10,
+                        getDrawingHorizontalLine: (value) => FlLine(
+                          color: Colors.grey.shade300,
+                          strokeWidth: 1,
+                        ),
+                      ),
+                      titlesData: FlTitlesData(
+                        show: true,
+                        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        leftTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 40,
+                            interval: 20,
+                            getTitlesWidget: (value, meta) {
+                              return Text(
+                                '${value.toInt()}°',
+                                style: const TextStyle(fontSize: 10, color: Colors.grey),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                      borderData: FlBorderData(show: false),
+                      minY: 0,
+                      maxY: _getMaxTemperature(),
+                      lineBarsData: [
+                        LineChartBarData(
+                          spots: temperatureData,
+                          isCurved: true,
+                          gradient: LinearGradient(
+                            colors: [Colors.blue, Colors.orange, Colors.red],
+                            stops: const [0.0, 0.5, 1.0],
+                          ),
+                          barWidth: 3,
+                          isStrokeCapRound: true,
+                          dotData: const FlDotData(show: false),
+                          belowBarData: BarAreaData(
+                            show: true,
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.blue.withOpacity(0.2),
+                                Colors.orange.withOpacity(0.2),
+                                Colors.red.withOpacity(0.2),
+                              ],
+                              begin: Alignment.bottomCenter,
+                              end: Alignment.topCenter,
+                            ),
+                          ),
+                        ),
+                        // Пороговые линии температуры
+                        LineChartBarData(
+                          spots: [FlSpot(0, 50), FlSpot(history.length.toDouble() - 1, 50)],
+                          isCurved: false,
+                          color: Colors.orange.withOpacity(0.5),
+                          barWidth: 1,
+                          dashArray: [5, 5],
+                          dotData: const FlDotData(show: false),
+                        ),
+                        LineChartBarData(
+                          spots: [FlSpot(0, 70), FlSpot(history.length.toDouble() - 1, 70)],
+                          isCurved: false,
+                          color: Colors.red.withOpacity(0.5),
+                          barWidth: 1,
+                          dashArray: [5, 5],
+                          dotData: const FlDotData(show: false),
+                        ),
+                      ],
+                      lineTouchData: LineTouchData(
+                        touchTooltipData: LineTouchTooltipData(
+                          getTooltipItems: (touchedSpots) {
+                            return touchedSpots.map((spot) {
+                              if (spot.barIndex == 0) {
+                                return LineTooltipItem(
+                                  '${spot.y.toStringAsFixed(1)}°C',
+                                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                );
+                              }
+                              return null;
+                            }).toList();
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+
+          // Легенда температуры
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _LegendItem(color: Colors.green, label: '< 50°C Норма'),
+                const SizedBox(width: 12),
+                _LegendItem(color: Colors.orange, label: '< 70°C Внимание'),
+                const SizedBox(width: 12),
+                _LegendItem(color: Colors.red, label: '> 70°C Опасно'),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Статистика
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('📈 Статистика', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatItem(
+                          label: 'Точек данных',
+                          value: '${history.length}',
+                        ),
+                      ),
+                      Expanded(
+                        child: _StatItem(
+                          label: 'Макс. вибрация',
+                          value: history.isEmpty 
+                              ? '—' 
+                              : '${history.map((h) => h.rmsVelocity).reduce((a, b) => a > b ? a : b).toStringAsFixed(2)} мм/с',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatItem(
+                          label: 'Сред. вибрация',
+                          value: history.isEmpty 
+                              ? '—' 
+                              : '${(history.map((h) => h.rmsVelocity).reduce((a, b) => a + b) / history.length).toStringAsFixed(2)} мм/с',
+                        ),
+                      ),
+                      Expanded(
+                        child: _StatItem(
+                          label: 'Макс. темп.',
+                          value: history.isEmpty 
+                              ? '—' 
+                              : '${history.map((h) => h.temperature).reduce((a, b) => a > b ? a : b).toStringAsFixed(1)}°C',
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  double _getMaxVibration() {
+    if (history.isEmpty) return 15;
+    final max = history.map((h) => h.rmsVelocity).reduce((a, b) => a > b ? a : b);
+    return math.max(max * 1.2, 15);
+  }
+
+  double _getMaxTemperature() {
+    if (history.isEmpty) return 100;
+    final max = history.map((h) => h.temperature).reduce((a, b) => a > b ? a : b);
+    return math.max(max * 1.2, 100);
+  }
+
+  Color _getVibrationLineColor() {
+    if (history.isEmpty) return Colors.blue;
+    final current = vibration.rmsVelocity;
+    if (current > 11.2) return Colors.red;
+    if (current > 4.5) return Colors.orange;
+    if (current > 1.8) return Colors.amber;
+    return Colors.green;
   }
 
   // ========== ВКЛАДКА АНАЛИТИКА ==========
@@ -2001,6 +2400,352 @@ class _FrequencyDiagnostic extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  // ========== ВКЛАДКА НАСТРОЕК УСТРОЙСТВА ==========
+  Widget _buildSettingsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Информация об устройстве
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Информация об устройстве',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  _buildInfoRow('Устройство', connectedDevice?.platformName ?? 'Н/Д'),
+                  _buildInfoRow('Прошивка', isAdvancedFirmware ? 'Расширенная (FFT)' : 'Базовая'),
+                  _buildInfoRow('Подключение', isConnected ? 'Активно' : 'Отключено'),
+                  if (_deviceInfo.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _deviceInfo,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _requestDeviceInfo,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Обновить информацию'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Калибровка
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.tune, color: Colors.orange.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Калибровка датчика',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  const Text(
+                    'Перекалибровка сбрасывает смещение акселерометра. '
+                    'Для корректной калибровки устройство должно находиться '
+                    'в неподвижном состоянии на ровной поверхности.',
+                    style: TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _isCalibrating ? null : _requestRecalibration,
+                      icon: _isCalibrating 
+                          ? const SizedBox(
+                              width: 20, height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.settings_backup_restore),
+                      label: Text(_isCalibrating ? 'Калибровка...' : 'Перекалибровать датчик'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Управление устройством
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.memory, color: Colors.red.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Управление устройством',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  const Text(
+                    'Перезагрузка устройства может понадобиться при проблемах '
+                    'с подключением или некорректных показаниях.',
+                    style: TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showRestartConfirmation(),
+                      icon: const Icon(Icons.restart_alt, color: Colors.red),
+                      label: const Text('Перезагрузить устройство'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red,
+                        side: const BorderSide(color: Colors.red),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Базовая линия аналитики
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.analytics_outlined, color: Colors.purple.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Предиктивная аналитика',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  _buildInfoRow(
+                    'Базовая линия', 
+                    _analytics.isBaselineTrained ? 'Обучена' : 'Не обучена'
+                  ),
+                  if (_analytics.isBaselineTrained) ...[
+                    _buildInfoRow(
+                      'Сэмплов в обучении',
+                      '${_analytics.baseline?.sampleCount ?? 0}',
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isTrainingBaseline ? null : _startBaselineTraining,
+                          icon: _isTrainingBaseline 
+                              ? const SizedBox(
+                                  width: 16, height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.school),
+                          label: Text(_isTrainingBaseline 
+                              ? 'Обучение (${_trainingSamples.length})' 
+                              : 'Обучить заново'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _analytics.isBaselineTrained ? _clearBaseline : null,
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Сбросить'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Версия приложения
+          Card(
+            color: Colors.grey.shade100,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  const Icon(Icons.vibration, size: 48, color: Colors.blue),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'VibeMon Pro',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const Text(
+                    'Версия 1.0.0',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Система предиктивного мониторинга\nоборудования',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black54, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.black54)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w500)),
+        ],
+      ),
+    );
+  }
+
+  // ========== КОМАНДЫ УСТРОЙСТВУ ==========
+  Future<void> _sendCommand(int command) async {
+    if (commandCharacteristic == null) {
+      _showSnackBar('Командная характеристика недоступна');
+      return;
+    }
+    try {
+      await commandCharacteristic!.write([command], withoutResponse: false);
+    } catch (e) {
+      _showSnackBar('Ошибка отправки команды: $e');
+    }
+  }
+
+  Future<void> _requestRecalibration() async {
+    setState(() => _isCalibrating = true);
+    _showSnackBar('Запуск калибровки... Не двигайте устройство!');
+    
+    await _sendCommand(0x01); // CMD_RECALIBRATE
+    
+    // Ждём завершения калибровки (около 5 секунд на 500 сэмплов)
+    await Future.delayed(const Duration(seconds: 6));
+    
+    setState(() => _isCalibrating = false);
+    _showSnackBar('Калибровка завершена');
+  }
+
+  Future<void> _requestDeviceRestart() async {
+    _showSnackBar('Перезагрузка устройства...');
+    await _sendCommand(0x02); // CMD_RESTART
+    
+    // Устройство перезагрузится и отключится
+    setState(() {
+      isConnected = false;
+      connectedDevice = null;
+      commandCharacteristic = null;
+    });
+  }
+
+  Future<void> _requestDeviceInfo() async {
+    _showSnackBar('Запрос информации...');
+    await _sendCommand(0x03); // CMD_GET_INFO
+  }
+
+  void _showRestartConfirmation() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Перезагрузка устройства'),
+        content: const Text(
+          'Вы уверены, что хотите перезагрузить устройство? '
+          'Соединение будет потеряно и потребуется повторное подключение.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _requestDeviceRestart();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Перезагрузить', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _clearBaseline() async {
+    _analytics.clearBaseline();
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/vibemon_baseline.json');
+    if (await file.exists()) {
+      await file.delete();
+    }
+    setState(() {
+      _lastAnalysis = null;
+    });
+    _showSnackBar('Базовая линия сброшена');
   }
 }
 

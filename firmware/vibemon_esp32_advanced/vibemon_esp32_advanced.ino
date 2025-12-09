@@ -33,6 +33,7 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <arduinoFFT.h>
+#include <Preferences.h>  // Для сохранения калибровки
 
 // ========== НАСТРОЙКИ ==========
 #define DEVICE_NAME "VibeMon-001-Pro"
@@ -61,6 +62,7 @@
 #define VIBRATION_CHAR_UUID "12345678-1234-5678-1234-56789abcdef2"
 #define SPECTRUM_CHAR_UUID  "12345678-1234-5678-1234-56789abcdef3"
 #define STATUS_CHAR_UUID    "12345678-1234-5678-1234-56789abcdef4"
+#define COMMAND_CHAR_UUID   "12345678-1234-5678-1234-56789abcdef5"  // Команды управления
 
 // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 BLEServer* pServer = nullptr;
@@ -68,6 +70,7 @@ BLECharacteristic* pTempCharacteristic = nullptr;
 BLECharacteristic* pVibrationCharacteristic = nullptr;
 BLECharacteristic* pSpectrumCharacteristic = nullptr;
 BLECharacteristic* pStatusCharacteristic = nullptr;
+BLECharacteristic* pCommandCharacteristic = nullptr;
 
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
@@ -106,14 +109,8 @@ struct VibrationData {
 VibrationData vibData;
 float temperature = 0.0;
 
-// Высокочастотный фильтр (убирает DC offset)
-float hpFilterState = 0;
-const float hpFilterAlpha = 0.95; // Частота среза ~5 Гц при 1000 Гц
-
 // Таймеры
 unsigned long lastBLEUpdate = 0;
-unsigned long sampleIndex = 0;
-unsigned long lastSampleTime = 0;
 
 // ========== BLE CALLBACKS ==========
 class ServerCallbacks : public BLEServerCallbacks {
@@ -127,6 +124,51 @@ class ServerCallbacks : public BLEServerCallbacks {
     deviceConnected = false;
     Serial.println("✗ Клиент отключен");
     digitalWrite(LED_PIN, LOW);
+  }
+};
+
+// Прототипы функций (для CommandCallbacks)
+void forceRecalibration();
+void saveCalibration();
+
+// Команды управления устройством
+// 0x01 = Перекалибровка
+// 0x02 = Сброс настроек  
+// 0x03 = Перезагрузка
+class CommandCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pCharacteristic) {
+    String value = pCharacteristic->getValue();
+    if (value.length() > 0) {
+      uint8_t command = value[0];
+      Serial.printf("📨 Получена команда: 0x%02X\n", command);
+      
+      switch (command) {
+        case 0x01:  // Перекалибровка
+          Serial.println("🔄 Команда: Перекалибровка");
+          forceRecalibration();
+          break;
+          
+        case 0x02:  // Сброс настроек
+          Serial.println("🗑️ Команда: Сброс настроек");
+          {
+            Preferences prefs;
+            prefs.begin("vibemon", false);
+            prefs.clear();
+            prefs.end();
+          }
+          forceRecalibration();
+          break;
+          
+        case 0x03:  // Перезагрузка
+          Serial.println("🔌 Команда: Перезагрузка");
+          delay(500);
+          ESP.restart();
+          break;
+          
+        default:
+          Serial.printf("❓ Неизвестная команда: 0x%02X\n", command);
+      }
+    }
   }
 };
 
@@ -182,11 +224,19 @@ void setup() {
   memset(rmsHistory, 0, sizeof(rmsHistory));
   memset(&vibData, 0, sizeof(vibData));
 
+  // Загрузка калибровки из памяти
+  loadCalibration();
+
   Serial.println("\n--------------------------------");
   Serial.println("Устройство готово!");
   Serial.println("Имя BLE: " + String(DEVICE_NAME));
   Serial.printf("FFT: %d точек @ %d Гц\n", SAMPLES, SAMPLING_FREQUENCY);
-  Serial.println("--------------------------------\n");
+  Serial.println("--------------------------------");
+  
+  if (!calibrated) {
+    Serial.println("⏳ Калибровка... Держите датчик неподвижно!");
+  }
+  Serial.println();
 
   // Индикация готовности
   for (int i = 0; i < 3; i++) {
@@ -232,6 +282,13 @@ void initBLE() {
   );
   pStatusCharacteristic->addDescriptor(new BLE2902());
 
+  // Команды управления (перекалибровка, сброс и т.д.)
+  pCommandCharacteristic = pService->createCharacteristic(
+    COMMAND_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  pCommandCharacteristic->setCallbacks(new CommandCallbacks());
+
   pService->start();
 
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
@@ -243,18 +300,71 @@ void initBLE() {
 
 // ========== ВЫСОКОЧАСТОТНЫЙ ФИЛЬТР ==========
 // Убирает DC offset (постоянную составляющую/гравитацию)
-float highPassFilter(float input) {
-  float output = hpFilterAlpha * (hpFilterState + input - hpFilterState);
-  hpFilterState = input;
-  return output - hpFilterState * (1 - hpFilterAlpha);
+// Использует IIR фильтр первого порядка
+
+// Калибровочное значение гравитации (будет загружено из памяти или измерено)
+float gravityOffset = 9.81;
+bool calibrated = false;
+int calibrationSamples = 0;
+float calibrationSum = 0;
+
+// Хранилище калибровки
+Preferences preferences;
+
+// Загрузка калибровки из памяти
+void loadCalibration() {
+  preferences.begin("vibemon", true);  // read-only
+  float saved = preferences.getFloat("gravity", 0);
+  preferences.end();
+  
+  if (saved > 8.0 && saved < 12.0) {  // Валидное значение (около 9.81)
+    gravityOffset = saved;
+    calibrated = true;
+    Serial.printf("✓ Калибровка загружена из памяти: %.3f m/s²\n", gravityOffset);
+  } else {
+    Serial.println("⚠ Калибровка не найдена, требуется новая калибровка");
+    calibrated = false;
+  }
 }
 
-// Простой ВЧ фильтр для удаления DC
+// Сохранение калибровки в память
+void saveCalibration() {
+  preferences.begin("vibemon", false);  // read-write
+  preferences.putFloat("gravity", gravityOffset);
+  preferences.end();
+  Serial.printf("💾 Калибровка сохранена: %.3f m/s²\n", gravityOffset);
+}
+
+// Принудительная перекалибровка (вызывать при необходимости)
+void forceRecalibration() {
+  calibrated = false;
+  calibrationSamples = 0;
+  calibrationSum = 0;
+  Serial.println("🔄 Запущена перекалибровка...");
+}
+
+// Простой ВЧ фильтр для удаления DC (улучшенная версия)
+// alpha = 0.98 даёт частоту среза ~0.3 Гц при 1000 Гц дискретизации
 float removeOffset(float input, float& prevInput, float& prevOutput) {
-  float output = 0.95 * prevOutput + input - prevInput;
+  const float alpha = 0.98;
+  float output = alpha * (prevOutput + input - prevInput);
   prevInput = input;
   prevOutput = output;
   return output;
+}
+
+// Калибровка - измеряем среднее значение в покое
+void calibrateGravity(float magnitude) {
+  if (!calibrated) {
+    calibrationSum += magnitude;
+    calibrationSamples++;
+    if (calibrationSamples >= 500) {
+      gravityOffset = calibrationSum / calibrationSamples;
+      calibrated = true;
+      Serial.printf("✓ Калибровка завершена: gravity = %.3f m/s²\n", gravityOffset);
+      saveCalibration();  // Сохраняем в память!
+    }
+  }
 }
 
 // ========== СБОР ДАННЫХ ДЛЯ FFT ==========
@@ -280,8 +390,14 @@ void collectSamples() {
         a.acceleration.z * a.acceleration.z
       );
       
-      // Убираем гравитацию через ВЧ фильтр
-      float filtered = removeOffset(magnitude, prevInput, prevOutput);
+      // Калибровка при первом запуске
+      calibrateGravity(magnitude);
+      
+      // Удаляем гравитацию (вычитаем калиброванное значение)
+      float withoutGravity = magnitude - gravityOffset;
+      
+      // Дополнительный ВЧ фильтр для удаления остаточного DC
+      float filtered = removeOffset(withoutGravity, prevInput, prevOutput);
       
       vReal[i] = filtered;
       vImag[i] = 0;
@@ -314,15 +430,24 @@ void collectSamples() {
   }
   
   // Расчёт базовых параметров
+  // RMS уже в м/с² (ускорение без гравитации)
   vibData.rms = sqrt(sumSquares / SAMPLES);
   vibData.peak = max(abs(minVal), abs(maxVal));
   vibData.peakToPeak = maxVal - minVal;
   vibData.crestFactor = (vibData.rms > 0) ? vibData.peak / vibData.rms : 0;
   
-  // Преобразование в мм/с (приближённо через интегрирование)
-  // Для синусоидального сигнала: v_rms = a_rms / (2 * pi * f)
-  // Используем среднюю частоту ~50 Гц для оценки
-  vibData.rmsVelocity = (vibData.rms * 9.81 * 1000) / (2 * PI * 50);
+  // Преобразование ускорения в скорость (мм/с)
+  // Формула: v = a / (2 * PI * f) * 1000 (для перевода м/с в мм/с)
+  // НО: vibData.rms уже в м/с² (не в g!), поэтому НЕ умножаем на 9.81
+  // Используем доминантную частоту или среднюю ~50 Гц
+  // Для малых вибраций в покое (<0.01 м/с²) результат будет ~0 мм/с
+  float freqForCalc = (vibData.dominantFreq > 5) ? vibData.dominantFreq : 50.0;
+  vibData.rmsVelocity = (vibData.rms * 1000.0) / (2.0 * PI * freqForCalc);
+  
+  // Защита от шума: если RMS очень маленький, считаем 0
+  if (vibData.rms < 0.02) {  // Порог шума ~0.02 м/с²
+    vibData.rmsVelocity = 0.0;
+  }
 }
 
 // ========== FFT АНАЛИЗ ==========
@@ -351,10 +476,12 @@ void performFFTAnalysis() {
   vibData.dominantFreq = (float)maxIndex * SAMPLING_FREQUENCY / SAMPLES;
   vibData.dominantAmp = maxMag / (SAMPLES / 2); // Нормализация
   
-  // Пересчёт RMS скорости с учётом доминантной частоты
-  if (vibData.dominantFreq > 5) {
-    vibData.rmsVelocity = (vibData.rms * 9.81 * 1000) / (2 * PI * vibData.dominantFreq);
+  // Пересчёт RMS скорости с учётом реальной доминантной частоты
+  // Формула: v = a / (2 * PI * f), результат в мм/с
+  if (vibData.dominantFreq > 5 && vibData.rms > 0.02) {
+    vibData.rmsVelocity = (vibData.rms * 1000.0) / (2.0 * PI * vibData.dominantFreq);
   }
+  // Если частота слишком низкая или RMS в пределах шума - оставляем 0
 }
 
 // ========== ОПРЕДЕЛЕНИЕ СТАТУСА ==========
