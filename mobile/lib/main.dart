@@ -2396,6 +2396,31 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
 // ========== ВИДЖЕТЫ ==========
 
+class _StatItem extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _StatItem({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        ),
+      ],
+    );
+  }
+}
+
 class _StatusCard extends StatelessWidget {
   final VibrationData vibration;
 
