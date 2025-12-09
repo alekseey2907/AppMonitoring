@@ -19,7 +19,15 @@ class PredictiveAnalytics {
   
   // Состояние системы
   bool get isTrained => _baseline != null;
+  bool get isBaselineTrained => _baseline != null;
+  BaselineModel? get baseline => _baseline;
   int get historySize => _healthHistory.length;
+
+  /// Сброс baseline
+  void clearBaseline() {
+    _baseline = null;
+    _healthHistory.clear();
+  }
 
   /// Обучение baseline на нормальных данных
   void trainBaseline(List<VibrationSample> normalSamples) {
