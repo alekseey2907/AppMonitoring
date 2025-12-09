@@ -2046,6 +2046,352 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       default: return 'Н/Д';
     }
   }
+
+  // ========== ВКЛАДКА НАСТРОЕК УСТРОЙСТВА ==========
+  Widget _buildSettingsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Информация об устройстве
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Информация об устройстве',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  _buildInfoRow('Устройство', connectedDevice?.platformName ?? 'Н/Д'),
+                  _buildInfoRow('Прошивка', isAdvancedFirmware ? 'Расширенная (FFT)' : 'Базовая'),
+                  _buildInfoRow('Подключение', isConnected ? 'Активно' : 'Отключено'),
+                  if (_deviceInfo.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _deviceInfo,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _requestDeviceInfo,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Обновить информацию'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Калибровка
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.tune, color: Colors.orange.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Калибровка датчика',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  const Text(
+                    'Перекалибровка сбрасывает смещение акселерометра. '
+                    'Для корректной калибровки устройство должно находиться '
+                    'в неподвижном состоянии на ровной поверхности.',
+                    style: TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _isCalibrating ? null : _requestRecalibration,
+                      icon: _isCalibrating 
+                          ? const SizedBox(
+                              width: 20, height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.settings_backup_restore),
+                      label: Text(_isCalibrating ? 'Калибровка...' : 'Перекалибровать датчик'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Управление устройством
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.memory, color: Colors.red.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Управление устройством',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  const Text(
+                    'Перезагрузка устройства может понадобиться при проблемах '
+                    'с подключением или некорректных показаниях.',
+                    style: TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showRestartConfirmation(),
+                      icon: const Icon(Icons.restart_alt, color: Colors.red),
+                      label: const Text('Перезагрузить устройство'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red,
+                        side: const BorderSide(color: Colors.red),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Базовая линия аналитики
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.analytics_outlined, color: Colors.purple.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Предиктивная аналитика',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  _buildInfoRow(
+                    'Базовая линия', 
+                    _analytics.isBaselineTrained ? 'Обучена' : 'Не обучена'
+                  ),
+                  if (_analytics.isBaselineTrained) ...[
+                    _buildInfoRow(
+                      'Сэмплов в обучении',
+                      '${_analytics.baseline?.sampleCount ?? 0}',
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isTrainingBaseline ? null : _startBaselineTraining,
+                          icon: _isTrainingBaseline 
+                              ? const SizedBox(
+                                  width: 16, height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.school),
+                          label: Text(_isTrainingBaseline 
+                              ? 'Обучение (${_trainingSamples.length})' 
+                              : 'Обучить заново'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _analytics.isBaselineTrained ? _clearBaseline : null,
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Сбросить'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Версия приложения
+          Card(
+            color: Colors.grey.shade100,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  const Icon(Icons.vibration, size: 48, color: Colors.blue),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'VibeMon Pro',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const Text(
+                    'Версия 1.0.0',
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Система предиктивного мониторинга\nоборудования',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black54, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.black54)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w500)),
+        ],
+      ),
+    );
+  }
+
+  // ========== КОМАНДЫ УСТРОЙСТВУ ==========
+  Future<void> _sendCommand(int command) async {
+    if (commandCharacteristic == null) {
+      _showSnackBar('Командная характеристика недоступна');
+      return;
+    }
+    try {
+      await commandCharacteristic!.write([command], withoutResponse: false);
+    } catch (e) {
+      _showSnackBar('Ошибка отправки команды: $e');
+    }
+  }
+
+  Future<void> _requestRecalibration() async {
+    setState(() => _isCalibrating = true);
+    _showSnackBar('Запуск калибровки... Не двигайте устройство!');
+    
+    await _sendCommand(0x01); // CMD_RECALIBRATE
+    
+    // Ждём завершения калибровки (около 5 секунд на 500 сэмплов)
+    await Future.delayed(const Duration(seconds: 6));
+    
+    setState(() => _isCalibrating = false);
+    _showSnackBar('Калибровка завершена');
+  }
+
+  Future<void> _requestDeviceRestart() async {
+    _showSnackBar('Перезагрузка устройства...');
+    await _sendCommand(0x02); // CMD_RESTART
+    
+    // Устройство перезагрузится и отключится
+    setState(() {
+      isConnected = false;
+      connectedDevice = null;
+      commandCharacteristic = null;
+    });
+  }
+
+  Future<void> _requestDeviceInfo() async {
+    _showSnackBar('Запрос информации...');
+    await _sendCommand(0x03); // CMD_GET_INFO
+  }
+
+  void _showRestartConfirmation() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Перезагрузка устройства'),
+        content: const Text(
+          'Вы уверены, что хотите перезагрузить устройство? '
+          'Соединение будет потеряно и потребуется повторное подключение.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _requestDeviceRestart();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Перезагрузить', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _clearBaseline() async {
+    _analytics.clearBaseline();
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/vibemon_baseline.json');
+    if (await file.exists()) {
+      await file.delete();
+    }
+    setState(() {
+      _lastAnalysis = null;
+    });
+    _showSnackBar('Базовая линия сброшена');
+  }
 }
 
 // ========== ВИДЖЕТЫ ==========
@@ -2401,357 +2747,84 @@ class _FrequencyDiagnostic extends StatelessWidget {
       ],
     );
   }
-
-  // ========== ВКЛАДКА НАСТРОЕК УСТРОЙСТВА ==========
-  Widget _buildSettingsTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Информация об устройстве
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue.shade700),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Информация об устройстве',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                  _buildInfoRow('Устройство', connectedDevice?.platformName ?? 'Н/Д'),
-                  _buildInfoRow('Прошивка', isAdvancedFirmware ? 'Расширенная (FFT)' : 'Базовая'),
-                  _buildInfoRow('Подключение', isConnected ? 'Активно' : 'Отключено'),
-                  if (_deviceInfo.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _deviceInfo,
-                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _requestDeviceInfo,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Обновить информацию'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          
-          const SizedBox(height: 16),
-          
-          // Калибровка
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.tune, color: Colors.orange.shade700),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Калибровка датчика',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                  const Text(
-                    'Перекалибровка сбрасывает смещение акселерометра. '
-                    'Для корректной калибровки устройство должно находиться '
-                    'в неподвижном состоянии на ровной поверхности.',
-                    style: TextStyle(color: Colors.black54, fontSize: 13),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _isCalibrating ? null : _requestRecalibration,
-                      icon: _isCalibrating 
-                          ? const SizedBox(
-                              width: 20, height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.settings_backup_restore),
-                      label: Text(_isCalibrating ? 'Калибровка...' : 'Перекалибровать датчик'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          
-          const SizedBox(height: 16),
-          
-          // Управление устройством
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.memory, color: Colors.red.shade700),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Управление устройством',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                  const Text(
-                    'Перезагрузка устройства может понадобиться при проблемах '
-                    'с подключением или некорректных показаниях.',
-                    style: TextStyle(color: Colors.black54, fontSize: 13),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _showRestartConfirmation(),
-                      icon: const Icon(Icons.restart_alt, color: Colors.red),
-                      label: const Text('Перезагрузить устройство'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.red,
-                        side: const BorderSide(color: Colors.red),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          
-          const SizedBox(height: 16),
-          
-          // Базовая линия аналитики
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.analytics_outlined, color: Colors.purple.shade700),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Предиктивная аналитика',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                  _buildInfoRow(
-                    'Базовая линия', 
-                    _analytics.isBaselineTrained ? 'Обучена' : 'Не обучена'
-                  ),
-                  if (_analytics.isBaselineTrained) ...[
-                    _buildInfoRow(
-                      'Сэмплов в обучении',
-                      '${_analytics.baseline?.sampleCount ?? 0}',
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _isTrainingBaseline ? null : _startBaselineTraining,
-                          icon: _isTrainingBaseline 
-                              ? const SizedBox(
-                                  width: 16, height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.school),
-                          label: Text(_isTrainingBaseline 
-                              ? 'Обучение (${_trainingSamples.length})' 
-                              : 'Обучить заново'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _analytics.isBaselineTrained ? _clearBaseline : null,
-                          icon: const Icon(Icons.delete_outline),
-                          label: const Text('Сбросить'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.red,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          
-          const SizedBox(height: 16),
-          
-          // Версия приложения
-          Card(
-            color: Colors.grey.shade100,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  const Icon(Icons.vibration, size: 48, color: Colors.blue),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'VibeMon Pro',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  const Text(
-                    'Версия 1.0.0',
-                    style: TextStyle(color: Colors.black54),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Система предиктивного мониторинга\nоборудования',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.black54, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: const TextStyle(color: Colors.black54)),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w500)),
-        ],
-      ),
-    );
-  }
-
-  // ========== КОМАНДЫ УСТРОЙСТВУ ==========
-  Future<void> _sendCommand(int command) async {
-    if (commandCharacteristic == null) {
-      _showSnackBar('Командная характеристика недоступна');
-      return;
-    }
-    try {
-      await commandCharacteristic!.write([command], withoutResponse: false);
-    } catch (e) {
-      _showSnackBar('Ошибка отправки команды: $e');
-    }
-  }
-
-  Future<void> _requestRecalibration() async {
-    setState(() => _isCalibrating = true);
-    _showSnackBar('Запуск калибровки... Не двигайте устройство!');
-    
-    await _sendCommand(0x01); // CMD_RECALIBRATE
-    
-    // Ждём завершения калибровки (около 5 секунд на 500 сэмплов)
-    await Future.delayed(const Duration(seconds: 6));
-    
-    setState(() => _isCalibrating = false);
-    _showSnackBar('Калибровка завершена');
-  }
-
-  Future<void> _requestDeviceRestart() async {
-    _showSnackBar('Перезагрузка устройства...');
-    await _sendCommand(0x02); // CMD_RESTART
-    
-    // Устройство перезагрузится и отключится
-    setState(() {
-      isConnected = false;
-      connectedDevice = null;
-      commandCharacteristic = null;
-    });
-  }
-
-  Future<void> _requestDeviceInfo() async {
-    _showSnackBar('Запрос информации...');
-    await _sendCommand(0x03); // CMD_GET_INFO
-  }
-
-  void _showRestartConfirmation() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Перезагрузка устройства'),
-        content: const Text(
-          'Вы уверены, что хотите перезагрузить устройство? '
-          'Соединение будет потеряно и потребуется повторное подключение.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _requestDeviceRestart();
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Перезагрузить', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _clearBaseline() async {
-    _analytics.clearBaseline();
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/vibemon_baseline.json');
-    if (await file.exists()) {
-      await file.delete();
-    }
-    setState(() {
-      _lastAnalysis = null;
-    });
-    _showSnackBar('Базовая линия сброшена');
-  }
 }
 
 class SensorData {
   final DateTime timestamp;
   final double temperature;
+  final double rms;
+  final double rmsVelocity;
+  final int status;
+
+  SensorData({
+    required this.timestamp,
+    required this.temperature,
+    required this.rms,
+    required this.rmsVelocity,
+    required this.status,
+  });
+}
+
+// Полные данные для записи и экспорта
+class SensorDataFull {
+  final DateTime timestamp;
+  final double temperature;
+  final double rms;
+  final double rmsVelocity;
+  final double peak;
+  final double peakToPeak;
+  final double crestFactor;
+  final double dominantFreq;
+  final double dominantAmp;
+  final int status;
+  final List<double> spectrumBands;
+
+  SensorDataFull({
+    required this.timestamp,
+    required this.temperature,
+    required this.rms,
+    required this.rmsVelocity,
+    required this.peak,
+    required this.peakToPeak,
+    required this.crestFactor,
+    required this.dominantFreq,
+    required this.dominantAmp,
+    required this.status,
+    required this.spectrumBands,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'timestamp': timestamp.toIso8601String(),
+    'temperature': temperature,
+    'rms': rms,
+    'rms_velocity': rmsVelocity,
+    'peak': peak,
+    'peak_to_peak': peakToPeak,
+    'crest_factor': crestFactor,
+    'dominant_freq': dominantFreq,
+    'dominant_amp': dominantAmp,
+    'status': status,
+    'spectrum_bands': spectrumBands,
+  };
+
+  factory SensorDataFull.fromJson(Map<String, dynamic> json) {
+    return SensorDataFull(
+      timestamp: DateTime.parse(json['timestamp']),
+      temperature: (json['temperature'] ?? 0).toDouble(),
+      rms: (json['rms'] ?? 0).toDouble(),
+      rmsVelocity: (json['rms_velocity'] ?? 0).toDouble(),
+      peak: (json['peak'] ?? 0).toDouble(),
+      peakToPeak: (json['peak_to_peak'] ?? 0).toDouble(),
+      crestFactor: (json['crest_factor'] ?? 0).toDouble(),
+      dominantFreq: (json['dominant_freq'] ?? 0).toDouble(),
+      dominantAmp: (json['dominant_amp'] ?? 0).toDouble(),
+      status: json['status'] ?? 0,
+      spectrumBands: (json['spectrum_bands'] as List?)
+          ?.map((e) => (e as num).toDouble())
+          .toList() ?? List.filled(8, 0.0),
+    );
+  }
+}
   final double rms;
   final double rmsVelocity;
   final int status;
