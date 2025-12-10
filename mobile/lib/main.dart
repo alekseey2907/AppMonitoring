@@ -10,7 +10,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:provider/provider.dart';
 import 'predictive_analytics.dart';
+import 'wifi_provider.dart';
+import 'wifi_connection_page.dart';
 
 void main() {
   runApp(const VibemonApp());
@@ -21,14 +24,19 @@ class VibemonApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'VibeMon Pro',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => WiFiProvider()),
+      ],
+      child: MaterialApp(
+        title: 'VibeMon Pro',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+          useMaterial3: true,
+        ),
+        home: const HomePage(),
       ),
-      home: const HomePage(),
     );
   }
 }
@@ -710,9 +718,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _disconnect() async {
+    // Отключение BLE
     if (connectedDevice != null) {
       await connectedDevice!.disconnect();
     }
+    
+    // Отключение WiFi
+    final wifiProvider = context.read<WiFiProvider>();
+    if (wifiProvider.isConnected) {
+      await wifiProvider.disconnect();
+    }
+    
     setState(() {
       isConnected = false;
       connectedDevice = null;
@@ -721,6 +737,46 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       spectrum = SpectrumData();
       isAdvancedFirmware = false;
     });
+  }
+
+  // Подключение через WiFi
+  Future<void> _connectViaWiFi() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const WiFiConnectionPage()),
+    );
+    
+    if (result == true && mounted) {
+      // Успешно подключились
+      setState(() {
+        isConnected = true;
+        isAdvancedFirmware = true; // WiFi всегда использует расширенную прошивку
+      });
+      
+      // Подписываемся на данные от WiFi
+      final wifiProvider = context.read<WiFiProvider>();
+      wifiProvider.dataStream.listen((wifiData) {
+        setState(() {
+          temperature = wifiProvider.temperature;
+          vibration = VibrationData(
+            rms: wifiData.rms,
+            rmsVelocity: wifiData.rmsVelocity,
+            peak: wifiData.peak,
+            peakToPeak: wifiData.peakToPeak,
+            crestFactor: wifiData.crestFactor,
+            dominantFreq: wifiData.dominantFreq,
+            dominantAmp: wifiData.dominantAmp,
+            status: wifiData.status,
+          );
+          spectrum = SpectrumData(bands: wifiProvider.spectrum);
+          lastUpdate = DateTime.now();
+          _addToHistory();
+          _updateAnalytics();
+        });
+      });
+      
+      _showSnackBar('✓ WiFi подключение установлено');
+    }
   }
 
   void _showSnackBar(String message) {
@@ -848,9 +904,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           child: ElevatedButton.icon(
             onPressed: isScanning ? _stopScan : _startScan,
             icon: Icon(isScanning ? Icons.stop : Icons.search),
-            label: Text(isScanning ? 'Остановить' : 'Найти ESP32'),
+            label: Text(isScanning ? 'Остановить' : 'Найти ESP32 (BLE)'),
             style: ElevatedButton.styleFrom(
               minimumSize: const Size(double.infinity, 48),
+            ),
+          ),
+        ),
+
+        // Кнопка WiFi подключения
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: ElevatedButton.icon(
+            onPressed: () => _connectViaWiFi(),
+            icon: const Icon(Icons.wifi),
+            label: const Text('Подключиться через WiFi'),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 48),
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
             ),
           ),
         ),
@@ -2095,9 +2166,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     ],
                   ),
                   const Divider(),
-                  _buildInfoRow('Устройство', connectedDevice?.platformName ?? 'Н/Д'),
+                  _buildInfoRow('Устройство', connectedDevice?.platformName ?? 
+                      (context.watch<WiFiProvider>().isConnected ? 'VibeMon (WiFi)' : 'Н/Д')),
                   _buildInfoRow('Прошивка', isAdvancedFirmware ? 'Расширенная (FFT)' : 'Базовая'),
-                  _buildInfoRow('Подключение', isConnected ? 'Активно' : 'Отключено'),
+                  _buildInfoRow('Подключение', isConnected ? 
+                      (connectedDevice != null ? 'BLE Активно' : 'WiFi Активно') : 'Отключено'),
                   if (_deviceInfo.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Container(
@@ -2335,14 +2408,25 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   // ========== КОМАНДЫ УСТРОЙСТВУ ==========
   Future<void> _sendCommand(int command) async {
-    if (commandCharacteristic == null) {
-      _showSnackBar('Командная характеристика недоступна');
-      return;
-    }
-    try {
-      await commandCharacteristic!.write([command], withoutResponse: false);
-    } catch (e) {
-      _showSnackBar('Ошибка отправки команды: $e');
+    // Проверяем тип подключения
+    final wifiProvider = context.read<WiFiProvider>();
+    
+    if (wifiProvider.isConnected) {
+      // Отправка через WiFi
+      try {
+        await wifiProvider.sendCommand(command);
+      } catch (e) {
+        _showSnackBar('Ошибка отправки команды (WiFi): $e');
+      }
+    } else if (commandCharacteristic != null) {
+      // Отправка через BLE
+      try {
+        await commandCharacteristic!.write([command], withoutResponse: false);
+      } catch (e) {
+        _showSnackBar('Ошибка отправки команды (BLE): $e');
+      }
+    } else {
+      _showSnackBar('Нет активного подключения');
     }
   }
 
