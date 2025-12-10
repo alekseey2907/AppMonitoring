@@ -35,15 +35,14 @@
 #include <Adafruit_Sensor.h>
 #include <arduinoFFT.h>
 #include <Preferences.h>  // Для сохранения калибровки
+#include "wifi_config.h"  // Конфигурация WiFi
 
 // ========== НАСТРОЙКИ ==========
 #define DEVICE_NAME "VibeMon-001-Pro"
 
-// WiFi настройки
-#define WIFI_SSID "VibeMon_AP"      // Имя точки доступа ESP32
-#define WIFI_PASSWORD "vibemon123"  // Пароль (минимум 8 символов)
+// WiFi настройки (используются из wifi_config.h)
 #define WIFI_TCP_PORT 8888           // TCP порт для подключения
-#define WIFI_ENABLED true            // true = WiFi, false = BLE
+#define WIFI_ENABLED WIFI_MODE_ENABLED  // true = WiFi, false = BLE
 
 // Пины
 #define ONE_WIRE_BUS 4
@@ -250,8 +249,14 @@ void setup() {
   Serial.println("Устройство готово!");
   if (wifiMode) {
     Serial.println("Режим: WiFi TCP/IP");
-    Serial.println("SSID: " + String(WIFI_SSID));
+#if WIFI_MODE == WIFI_MODE_STA
+    Serial.println("Тип: Station (домашняя WiFi)");
+    Serial.println("IP ESP32: " + WiFi.localIP().toString());
+#elif WIFI_MODE == WIFI_MODE_AP
+    Serial.println("Тип: Access Point (ESP32 раздаёт WiFi)");
+    Serial.println("SSID: " + String(WIFI_AP_SSID));
     Serial.println("IP: " + WiFi.softAPIP().toString());
+#endif
     Serial.printf("Порт: %d\n", WIFI_TCP_PORT);
   } else {
     Serial.println("Режим: BLE");
@@ -326,12 +331,54 @@ void initBLE() {
 }
 
 void initWiFi() {
+#if WIFI_MODE == WIFI_MODE_STA
+  // ========== РЕЖИМ STATION (подключение к домашней WiFi) ==========
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
+  
+  Serial.print("  Подключение к WiFi: ");
+  Serial.println(WIFI_STA_SSID);
+  Serial.print("  ");
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  Serial.println();
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("  ✓ WiFi подключен!");
+    Serial.print("  IP адрес ESP32: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("  Шлюз: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("  DNS: ");
+    Serial.println(WiFi.dnsIP());
+  } else {
+    Serial.println("  ✗ Ошибка подключения к WiFi!");
+    Serial.println("  Проверьте SSID и пароль в wifi_config.h");
+    Serial.println("  Переключаюсь в режим AP...");
+    
+    // Fallback на режим AP
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
+    Serial.print("  AP IP адрес: ");
+    Serial.println(WiFi.softAPIP());
+  }
+  
+#elif WIFI_MODE == WIFI_MODE_AP
+  // ========== РЕЖИМ ACCESS POINT (ESP32 раздаёт WiFi) ==========
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
   
   IPAddress IP = WiFi.softAPIP();
   Serial.print("  AP IP адрес: ");
   Serial.println(IP);
+  Serial.println("  Подключитесь к сети: " + String(WIFI_AP_SSID));
+  Serial.println("  Пароль: " + String(WIFI_AP_PASSWORD));
+#endif
   
   wifiServer.begin();
   Serial.printf("  TCP сервер запущен на порту %d\n", WIFI_TCP_PORT);
