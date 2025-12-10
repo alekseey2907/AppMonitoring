@@ -771,7 +771,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           spectrum = SpectrumData(bands: wifiProvider.spectrum);
           lastUpdate = DateTime.now();
           _addToHistory();
-          _updateAnalytics();
         });
       });
       
