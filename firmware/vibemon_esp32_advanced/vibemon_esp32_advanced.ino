@@ -436,18 +436,9 @@ void collectSamples() {
   vibData.peakToPeak = maxVal - minVal;
   vibData.crestFactor = (vibData.rms > 0) ? vibData.peak / vibData.rms : 0;
   
-  // Преобразование ускорения в скорость (мм/с)
-  // Формула: v = a / (2 * PI * f) * 1000 (для перевода м/с в мм/с)
-  // НО: vibData.rms уже в м/с² (не в g!), поэтому НЕ умножаем на 9.81
-  // Используем доминантную частоту или среднюю ~50 Гц
-  // Для малых вибраций в покое (<0.01 м/с²) результат будет ~0 мм/с
-  float freqForCalc = (vibData.dominantFreq > 5) ? vibData.dominantFreq : 50.0;
-  vibData.rmsVelocity = (vibData.rms * 1000.0) / (2.0 * PI * freqForCalc);
-  
-  // Защита от шума: если RMS очень маленький, считаем 0
-  if (vibData.rms < 0.02) {  // Порог шума ~0.02 м/с²
-    vibData.rmsVelocity = 0.0;
-  }
+  // ПОКА НЕ вычисляем скорость - сначала найдём доминантную частоту через FFT
+  // Это будет сделано в performFFTAnalysis()
+  vibData.rmsVelocity = 0.0; // Временно
 }
 
 // ========== FFT АНАЛИЗ ==========
@@ -476,12 +467,27 @@ void performFFTAnalysis() {
   vibData.dominantFreq = (float)maxIndex * SAMPLING_FREQUENCY / SAMPLES;
   vibData.dominantAmp = maxMag / (SAMPLES / 2); // Нормализация
   
-  // Пересчёт RMS скорости с учётом реальной доминантной частоты
+  // ПРАВИЛЬНЫЙ расчёт RMS скорости с учётом доминантной частоты
   // Формула: v = a / (2 * PI * f), результат в мм/с
-  if (vibData.dominantFreq > 5 && vibData.rms > 0.02) {
+  
+  // КРИТИЧНО: Проверяем порог шума ДО расчёта скорости
+  if (vibData.rms < 0.05) {  
+    // Ускорение < 0.05 м/с² = шум/покой
+    vibData.rmsVelocity = 0.0;
+  } else if (vibData.dominantFreq > 5.0) {  
+    // Есть реальная доминантная частота (не DC)
     vibData.rmsVelocity = (vibData.rms * 1000.0) / (2.0 * PI * vibData.dominantFreq);
+  } else {  
+    // Частота слишком низкая или не определена
+    // Используем среднюю частоту для промышленных вибраций ~10 Гц
+    vibData.rmsVelocity = (vibData.rms * 1000.0) / (2.0 * PI * 10.0);
   }
-  // Если частота слишком низкая или RMS в пределах шума - оставляем 0
+  
+  // Дополнительная защита от аномально высоких значений
+  if (vibData.rmsVelocity > 100.0) {  
+    // Что-то пошло не так (> 100 мм/с это катастрофа)
+    vibData.rmsVelocity = 0.0;
+  }
 }
 
 // ========== ОПРЕДЕЛЕНИЕ СТАТУСА ==========
@@ -608,11 +614,13 @@ void printStatus() {
   Serial.println(statusText[vibData.status]);
   Serial.print("\033[0m"); // Сброс цвета
   
-  Serial.printf("  RMS: %.4f g (%.2f мм/с)\n", vibData.rms, vibData.rmsVelocity);
-  Serial.printf("  Peak: %.4f g | P-P: %.4f g\n", vibData.peak, vibData.peakToPeak);
+  Serial.printf("  RMS ускорение: %.4f м/с² (%.3f g)\n", vibData.rms, vibData.rms / 9.81);
+  Serial.printf("  RMS скорость: %.2f мм/с\n", vibData.rmsVelocity);
+  Serial.printf("  Peak: %.4f м/с² | P-P: %.4f м/с²\n", vibData.peak, vibData.peakToPeak);
   Serial.printf("  Crest Factor: %.2f\n", vibData.crestFactor);
-  Serial.printf("  Дом. частота: %.1f Гц (%.4f)\n", vibData.dominantFreq, vibData.dominantAmp);
+  Serial.printf("  Дом. частота: %.1f Гц (амплитуда: %.4f)\n", vibData.dominantFreq, vibData.dominantAmp);
   Serial.printf("  Температура: %.1f°C\n", temperature);
+  Serial.printf("  Gravity offset: %.3f м/с²\n", gravityOffset);
   
   if (deviceConnected) {
     Serial.println("  [BLE: Подключен ✓]");
