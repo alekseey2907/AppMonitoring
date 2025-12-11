@@ -1394,16 +1394,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           getTooltipItems: (touchedSpots) {
                             return touchedSpots.map((spot) {
                               if (spot.barIndex == 0) {
-                                final seconds = spot.x.toInt();
-                                String timeStr;
-                                if (seconds < 60) {
-                                  timeStr = '${seconds}с';
-                                } else {
-                                  final minutes = seconds ~/ 60;
-                                  final secs = seconds % 60;
-                                  timeStr = secs == 0 ? '${minutes}м' : '${minutes}м ${secs}с';
-                                }
-                              if (spot.barIndex == 0) {
                                 // Показываем реальное время суток
                                 if (firstTimestamp == null) return null;
                                 final timePoint = firstTimestamp.add(Duration(seconds: spot.x.toInt()));
@@ -1412,6 +1402,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                                   '$timeStr\n${spot.y.toStringAsFixed(1)}°C',
                                   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                                 );
+                              }
+                              return null;
+                            }).toList();
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+
           // Легенда температуры
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
