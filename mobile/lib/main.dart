@@ -1171,27 +1171,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             interval: maxTime > 60 ? 60 : (maxTime > 30 ? 30 : 10),
                             getTitlesWidget: (value, meta) {
                               if (firstTimestamp == null) return const SizedBox.shrink();
-                              // Показываем время от начала
-                              final seconds = value.toInt();
-                              if (seconds < 60) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                    '${seconds}с',
-                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                                  ),
-                                );
-                              } else {
-                                final minutes = seconds ~/ 60;
-                                final secs = seconds % 60;
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                    secs == 0 ? '${minutes}м' : '${minutes}м${secs}с',
-                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                                  ),
-                                );
-                              }
+                              // Вычисляем реальное время суток
+                              final timePoint = firstTimestamp.add(Duration(seconds: value.toInt()));
+                              final timeStr = DateFormat('HH:mm:ss').format(timePoint);
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 8.0),
+                                child: Text(
+                                  timeStr,
+                                  style: const TextStyle(fontSize: 9, color: Colors.grey),
+                                ),
+                              );
                             },
                           ),
                         ),
@@ -1256,16 +1245,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           getTooltipItems: (touchedSpots) {
                             return touchedSpots.map((spot) {
                               if (spot.barIndex == 0) {
-                                // Находим ближайшую точку данных по времени
-                                final seconds = spot.x.toInt();
-                                String timeStr;
-                                if (seconds < 60) {
-                                  timeStr = '${seconds}с';
-                                } else {
-                                  final minutes = seconds ~/ 60;
-                                  final secs = seconds % 60;
-                                  timeStr = secs == 0 ? '${minutes}м' : '${minutes}м ${secs}с';
-                                }
+                                // Показываем реальное время суток
+                                if (firstTimestamp == null) return null;
+                                final timePoint = firstTimestamp.add(Duration(seconds: spot.x.toInt()));
+                                final timeStr = DateFormat('HH:mm:ss').format(timePoint);
                                 return LineTooltipItem(
                                   '$timeStr\n${spot.y.toStringAsFixed(2)} мм/с',
                                   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -1334,26 +1317,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             interval: maxTime > 60 ? 60 : (maxTime > 30 ? 30 : 10),
                             getTitlesWidget: (value, meta) {
                               if (firstTimestamp == null) return const SizedBox.shrink();
-                              final seconds = value.toInt();
-                              if (seconds < 60) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                    '${seconds}с',
-                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                                  ),
-                                );
-                              } else {
-                                final minutes = seconds ~/ 60;
-                                final secs = seconds % 60;
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                    secs == 0 ? '${minutes}м' : '${minutes}м${secs}с',
-                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                                  ),
-                                );
-                              }
+                              // Вычисляем реальное время суток
+                              final timePoint = firstTimestamp.add(Duration(seconds: value.toInt()));
+                              final timeStr = DateFormat('HH:mm:ss').format(timePoint);
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 8.0),
+                                child: Text(
+                                  timeStr,
+                                  style: const TextStyle(fontSize: 9, color: Colors.grey),
+                                ),
+                              );
                             },
                           ),
                         ),
@@ -1430,20 +1403,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                                   final secs = seconds % 60;
                                   timeStr = secs == 0 ? '${minutes}м' : '${minutes}м ${secs}с';
                                 }
+                              if (spot.barIndex == 0) {
+                                // Показываем реальное время суток
+                                if (firstTimestamp == null) return null;
+                                final timePoint = firstTimestamp.add(Duration(seconds: spot.x.toInt()));
+                                final timeStr = DateFormat('HH:mm:ss').format(timePoint);
                                 return LineTooltipItem(
                                   '$timeStr\n${spot.y.toStringAsFixed(1)}°C',
                                   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                                 );
-                              }
-                              return null;
-                            }).toList();
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-          ),
-
           // Легенда температуры
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
