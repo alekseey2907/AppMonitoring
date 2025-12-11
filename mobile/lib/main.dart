@@ -1085,14 +1085,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   // ========== ВКЛАДКА ГРАФИКИ ==========
   Widget _buildChartsTab() {
-    // Подготовка данных для графиков
-    final vibrationData = history.asMap().entries.map((entry) {
-      return FlSpot(entry.key.toDouble(), entry.value.rmsVelocity);
+    // Подготовка данных для графиков с временными метками
+    final DateTime? firstTimestamp = history.isNotEmpty ? history.first.timestamp : null;
+    
+    final vibrationData = history.map((data) {
+      if (firstTimestamp == null) return FlSpot(0, data.rmsVelocity);
+      // Используем секунды от начала записи
+      final secondsFromStart = data.timestamp.difference(firstTimestamp).inSeconds.toDouble();
+      return FlSpot(secondsFromStart, data.rmsVelocity);
     }).toList();
 
-    final temperatureData = history.asMap().entries.map((entry) {
-      return FlSpot(entry.key.toDouble(), entry.value.temperature);
+    final temperatureData = history.map((data) {
+      if (firstTimestamp == null) return FlSpot(0, data.temperature);
+      final secondsFromStart = data.timestamp.difference(firstTimestamp).inSeconds.toDouble();
+      return FlSpot(secondsFromStart, data.temperature);
     }).toList();
+    
+    // Максимальное время для оси X
+    final maxTime = vibrationData.isNotEmpty ? vibrationData.last.x : 0.0;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -1154,7 +1164,37 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         show: true,
                         rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                         topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        bottomTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 30,
+                            interval: maxTime > 60 ? 60 : (maxTime > 30 ? 30 : 10),
+                            getTitlesWidget: (value, meta) {
+                              if (firstTimestamp == null) return const SizedBox.shrink();
+                              // Показываем время от начала
+                              final seconds = value.toInt();
+                              if (seconds < 60) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    '${seconds}с',
+                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                  ),
+                                );
+                              } else {
+                                final minutes = seconds ~/ 60;
+                                final secs = seconds % 60;
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    secs == 0 ? '${minutes}м' : '${minutes}м${secs}с',
+                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                  ),
+                                );
+                              }
+                            },
+                          ),
+                        ),
                         leftTitles: AxisTitles(
                           sideTitles: SideTitles(
                             showTitles: true,
@@ -1187,7 +1227,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         ),
                         // Пороговые линии ISO 10816
                         LineChartBarData(
-                          spots: [FlSpot(0, 1.8), FlSpot(history.length.toDouble() - 1, 1.8)],
+                          spots: [FlSpot(0, 1.8), FlSpot(maxTime, 1.8)],
                           isCurved: false,
                           color: Colors.green.withOpacity(0.5),
                           barWidth: 1,
@@ -1195,7 +1235,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           dotData: const FlDotData(show: false),
                         ),
                         LineChartBarData(
-                          spots: [FlSpot(0, 4.5), FlSpot(history.length.toDouble() - 1, 4.5)],
+                          spots: [FlSpot(0, 4.5), FlSpot(maxTime, 4.5)],
                           isCurved: false,
                           color: Colors.orange.withOpacity(0.5),
                           barWidth: 1,
@@ -1203,7 +1243,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           dotData: const FlDotData(show: false),
                         ),
                         LineChartBarData(
-                          spots: [FlSpot(0, 11.2), FlSpot(history.length.toDouble() - 1, 11.2)],
+                          spots: [FlSpot(0, 11.2), FlSpot(maxTime, 11.2)],
                           isCurved: false,
                           color: Colors.red.withOpacity(0.5),
                           barWidth: 1,
@@ -1216,8 +1256,18 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           getTooltipItems: (touchedSpots) {
                             return touchedSpots.map((spot) {
                               if (spot.barIndex == 0) {
+                                // Находим ближайшую точку данных по времени
+                                final seconds = spot.x.toInt();
+                                String timeStr;
+                                if (seconds < 60) {
+                                  timeStr = '${seconds}с';
+                                } else {
+                                  final minutes = seconds ~/ 60;
+                                  final secs = seconds % 60;
+                                  timeStr = secs == 0 ? '${minutes}м' : '${minutes}м ${secs}с';
+                                }
                                 return LineTooltipItem(
-                                  '${spot.y.toStringAsFixed(2)} мм/с',
+                                  '$timeStr\n${spot.y.toStringAsFixed(2)} мм/с',
                                   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                                 );
                               }
@@ -1277,7 +1327,36 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         show: true,
                         rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                         topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        bottomTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 30,
+                            interval: maxTime > 60 ? 60 : (maxTime > 30 ? 30 : 10),
+                            getTitlesWidget: (value, meta) {
+                              if (firstTimestamp == null) return const SizedBox.shrink();
+                              final seconds = value.toInt();
+                              if (seconds < 60) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    '${seconds}с',
+                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                  ),
+                                );
+                              } else {
+                                final minutes = seconds ~/ 60;
+                                final secs = seconds % 60;
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    secs == 0 ? '${minutes}м' : '${minutes}м${secs}с',
+                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                  ),
+                                );
+                              }
+                            },
+                          ),
+                        ),
                         leftTitles: AxisTitles(
                           sideTitles: SideTitles(
                             showTitles: true,
@@ -1321,7 +1400,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         ),
                         // Пороговые линии температуры
                         LineChartBarData(
-                          spots: [FlSpot(0, 50), FlSpot(history.length.toDouble() - 1, 50)],
+                          spots: [FlSpot(0, 50), FlSpot(maxTime, 50)],
                           isCurved: false,
                           color: Colors.orange.withOpacity(0.5),
                           barWidth: 1,
@@ -1329,7 +1408,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           dotData: const FlDotData(show: false),
                         ),
                         LineChartBarData(
-                          spots: [FlSpot(0, 70), FlSpot(history.length.toDouble() - 1, 70)],
+                          spots: [FlSpot(0, 70), FlSpot(maxTime, 70)],
                           isCurved: false,
                           color: Colors.red.withOpacity(0.5),
                           barWidth: 1,
@@ -1342,8 +1421,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           getTooltipItems: (touchedSpots) {
                             return touchedSpots.map((spot) {
                               if (spot.barIndex == 0) {
+                                final seconds = spot.x.toInt();
+                                String timeStr;
+                                if (seconds < 60) {
+                                  timeStr = '${seconds}с';
+                                } else {
+                                  final minutes = seconds ~/ 60;
+                                  final secs = seconds % 60;
+                                  timeStr = secs == 0 ? '${minutes}м' : '${minutes}м ${secs}с';
+                                }
                                 return LineTooltipItem(
-                                  '${spot.y.toStringAsFixed(1)}°C',
+                                  '$timeStr\n${spot.y.toStringAsFixed(1)}°C',
                                   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                                 );
                               }
