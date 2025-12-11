@@ -40,9 +40,13 @@
 // ========== НАСТРОЙКИ ==========
 #define DEVICE_NAME "VibeMon-001-Pro"
 
-// WiFi настройки (используются из wifi_config.h)
+// Отладка (false = минимум логов для экономии памяти)
+#define DEBUG_MODE false
+
+// ВНИМАНИЕ: Для экономии памяти рекомендуется использовать ТОЛЬКО BLE или ТОЛЬКО WiFi
+// WiFi настройки (опционально, можно отключить для экономии памяти)
 #define WIFI_TCP_PORT 8888           // TCP порт для подключения
-#define WIFI_ENABLED WIFI_MODE_ENABLED  // true = WiFi, false = BLE
+#define WIFI_ENABLED false  // false = только BLE (экономия памяти), true = добавить WiFi
 
 // Пины
 #define ONE_WIRE_BUS 4
@@ -248,19 +252,13 @@ void setup() {
   Serial.println("\n--------------------------------");
   Serial.println("Устройство готово!");
   if (wifiMode) {
-    Serial.println("Режим: WiFi TCP/IP");
-#if WIFI_MODE == WIFI_MODE_STA
-    Serial.println("Тип: Station (домашняя WiFi)");
-    Serial.println("IP ESP32: " + WiFi.localIP().toString());
-#elif WIFI_MODE == WIFI_MODE_AP
-    Serial.println("Тип: Access Point (ESP32 раздаёт WiFi)");
-    Serial.println("SSID: " + String(WIFI_AP_SSID));
-    Serial.println("IP: " + WiFi.softAPIP().toString());
-#endif
-    Serial.printf("Порт: %d\n", WIFI_TCP_PORT);
+    Serial.println("Режим: WiFi (домашняя сеть)");
+    Serial.print("IP адрес: ");
+    Serial.println(WiFi.localIP());
+    Serial.printf("TCP порт: %d\n", WIFI_TCP_PORT);
   } else {
-    Serial.println("Режим: BLE");
-    Serial.println("Имя BLE: " + String(DEVICE_NAME));
+    Serial.println("Режим: BLE (Bluetooth)");
+    Serial.println("Имя: " + String(DEVICE_NAME));
   }
   Serial.printf("FFT: %d точек @ %d Гц\n", SAMPLES, SAMPLING_FREQUENCY);
   Serial.println("--------------------------------");
@@ -331,13 +329,12 @@ void initBLE() {
 }
 
 void initWiFi() {
-#if WIFI_MODE == WIFI_MODE_STA
-  // ========== РЕЖИМ STATION (подключение к домашней WiFi) ==========
+  // Подключение к домашней WiFi
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   
   Serial.print("  Подключение к WiFi: ");
-  Serial.println(WIFI_STA_SSID);
+  Serial.println(WIFI_SSID);
   Serial.print("  ");
   
   int attempts = 0;
@@ -352,33 +349,10 @@ void initWiFi() {
     Serial.println("  ✓ WiFi подключен!");
     Serial.print("  IP адрес ESP32: ");
     Serial.println(WiFi.localIP());
-    Serial.print("  Шлюз: ");
-    Serial.println(WiFi.gatewayIP());
-    Serial.print("  DNS: ");
-    Serial.println(WiFi.dnsIP());
   } else {
     Serial.println("  ✗ Ошибка подключения к WiFi!");
     Serial.println("  Проверьте SSID и пароль в wifi_config.h");
-    Serial.println("  Переключаюсь в режим AP...");
-    
-    // Fallback на режим AP
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
-    Serial.print("  AP IP адрес: ");
-    Serial.println(WiFi.softAPIP());
   }
-  
-#elif WIFI_MODE == WIFI_MODE_AP
-  // ========== РЕЖИМ ACCESS POINT (ESP32 раздаёт WiFi) ==========
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
-  
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("  AP IP адрес: ");
-  Serial.println(IP);
-  Serial.println("  Подключитесь к сети: " + String(WIFI_AP_SSID));
-  Serial.println("  Пароль: " + String(WIFI_AP_PASSWORD));
-#endif
   
   wifiServer.begin();
   Serial.printf("  TCP сервер запущен на порту %d\n", WIFI_TCP_PORT);
@@ -693,6 +667,7 @@ void sendBLEData() {
 
 // ========== ВЫВОД В SERIAL ==========
 void printStatus() {
+#if DEBUG_MODE
   const char* statusText[] = {"✓ GOOD", "~ ACCEPTABLE", "⚠ ALARM", "✗ DANGER"};
   const char* statusColor[] = {"32", "33", "33", "31"}; // ANSI цвета
   
@@ -722,6 +697,12 @@ void printStatus() {
     }
   }
   Serial.println();
+#else
+  // Минимальный вывод для экономии памяти
+  Serial.printf("RMS:%.2f мм/с T:%.1f°C S:%d %s\n", 
+    vibData.rmsVelocity, temperature, vibData.status,
+    deviceConnected ? "OK" : "--");
+#endif
 }
 
 // ========== ОТПРАВКА ДАННЫХ ПО WiFi ==========
