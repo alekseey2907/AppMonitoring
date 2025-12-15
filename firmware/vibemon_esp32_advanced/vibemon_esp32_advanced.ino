@@ -27,7 +27,6 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-#include <WiFi.h>
 #include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -35,7 +34,6 @@
 #include <Adafruit_Sensor.h>
 #include <arduinoFFT.h>
 #include <Preferences.h>  // Для сохранения калибровки
-#include "wifi_config.h"  // Конфигурация WiFi
 
 // ========== НАСТРОЙКИ ==========
 #define DEVICE_NAME "VibeMon-001-Pro"
@@ -44,9 +42,7 @@
 #define DEBUG_MODE false
 
 // ВНИМАНИЕ: Для экономии памяти рекомендуется использовать ТОЛЬКО BLE или ТОЛЬКО WiFi
-// WiFi настройки (опционально, можно отключить для экономии памяти)
-#define WIFI_TCP_PORT 8888           // TCP порт для подключения
-#define WIFI_ENABLED false  // false = только BLE (экономия памяти), true = добавить WiFi
+// WiFi полностью удалён для экономии памяти (только BLE)
 
 // Пины
 #define ONE_WIRE_BUS 4
@@ -84,10 +80,6 @@ BLECharacteristic* pStatusCharacteristic = nullptr;
 BLECharacteristic* pCommandCharacteristic = nullptr;
 
 // WiFi переменные
-WiFiServer wifiServer(WIFI_TCP_PORT);
-WiFiClient wifiClient;
-bool wifiMode = WIFI_ENABLED;
-
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
@@ -229,16 +221,10 @@ void setup() {
     Serial.println("НЕ НАЙДЕН");
   }
 
-  // Инициализация связи (BLE или WiFi)
-  if (wifiMode) {
-    Serial.print("Инициализация WiFi AP... ");
-    initWiFi();
-    Serial.println("OK");
-  } else {
-    Serial.print("Инициализация BLE... ");
-    initBLE();
-    Serial.println("OK");
-  }
+  // Инициализация связи (только BLE)
+  Serial.print("Инициализация BLE... ");
+  initBLE();
+  Serial.println("OK");
 
   // Инициализация буферов
   memset(vReal, 0, sizeof(vReal));
@@ -251,15 +237,8 @@ void setup() {
 
   Serial.println("\n--------------------------------");
   Serial.println("Устройство готово!");
-  if (wifiMode) {
-    Serial.println("Режим: WiFi (домашняя сеть)");
-    Serial.print("IP адрес: ");
-    Serial.println(WiFi.localIP());
-    Serial.printf("TCP порт: %d\n", WIFI_TCP_PORT);
-  } else {
-    Serial.println("Режим: BLE (Bluetooth)");
-    Serial.println("Имя: " + String(DEVICE_NAME));
-  }
+  Serial.println("Режим: BLE (Bluetooth)");
+  Serial.println("Имя: " + String(DEVICE_NAME));
   Serial.printf("FFT: %d точек @ %d Гц\n", SAMPLES, SAMPLING_FREQUENCY);
   Serial.println("--------------------------------");
   
@@ -326,36 +305,6 @@ void initBLE() {
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);
   BLEDevice::startAdvertising();
-}
-
-void initWiFi() {
-  // Подключение к домашней WiFi
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  Serial.print("  Подключение к WiFi: ");
-  Serial.println(WIFI_SSID);
-  Serial.print("  ");
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  Serial.println();
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("  ✓ WiFi подключен!");
-    Serial.print("  IP адрес ESP32: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("  ✗ Ошибка подключения к WiFi!");
-    Serial.println("  Проверьте SSID и пароль в wifi_config.h");
-  }
-  
-  wifiServer.begin();
-  Serial.printf("  TCP сервер запущен на порту %d\n", WIFI_TCP_PORT);
 }
 
 // ========== ВЫСОКОЧАСТОТНЫЙ ФИЛЬТР ==========
@@ -731,18 +680,10 @@ void printStatus() {
   Serial.printf("  Температура: %.1f°C\n", temperature);
   Serial.printf("  Gravity: (%.3f, %.3f, %.3f) м/с²\n", gravityX, gravityY, gravityZ);
   
-  if (wifiMode) {
-    if (deviceConnected) {
-      Serial.println("  [WiFi: Подключен ✓]");
-    } else {
-      Serial.println("  [WiFi: Ожидание...]");
-    }
+  if (deviceConnected) {
+    Serial.println("  [BLE: Подключен ✓]");
   } else {
-    if (deviceConnected) {
-      Serial.println("  [BLE: Подключен ✓]");
-    } else {
-      Serial.println("  [BLE: Ожидание...]");
-    }
+    Serial.println("  [BLE: Ожидание...]");
   }
   Serial.println();
 #else
@@ -753,97 +694,9 @@ void printStatus() {
 #endif
 }
 
-// ========== ОТПРАВКА ДАННЫХ ПО WiFi ==========
-void sendWiFiData() {
-  if (!wifiClient.connected()) return;
-  
-  // Формат: бинарные данные для эффективности
-  // Заголовок пакета (4 байта): 0xVIBE
-  wifiClient.write(0x56); // 'V'
-  wifiClient.write(0x49); // 'I'
-  wifiClient.write(0x42); // 'B'
-  wifiClient.write(0x45); // 'E'
-  
-  // Температура (4 байта float)
-  wifiClient.write((uint8_t*)&temperature, sizeof(float));
-  
-  // Данные вибрации (структура VibrationData - 32 байта)
-  wifiClient.write((uint8_t*)&vibData, sizeof(VibrationData));
-  
-  // Спектр FFT (8 полос по 4 байта)
-  float bands[8];
-  getSpectrumBands(bands);
-  wifiClient.write((uint8_t*)bands, 32);
-  
-  // Статус JSON для совместимости (опционально)
-  char statusJson[200];
-  const char* statusText[] = {"Good", "Acceptable", "Alarm", "Danger"};
-  snprintf(statusJson, sizeof(statusJson),
-    "{\"rms\":%.3f,\"vel\":%.2f,\"peak\":%.3f,\"cf\":%.2f,\"freq\":%.1f,\"status\":\"%s\",\"temp\":%.1f}\n",
-    vibData.rms, vibData.rmsVelocity, vibData.peak, vibData.crestFactor,
-    vibData.dominantFreq, statusText[vibData.status], temperature
-  );
-  wifiClient.print(statusJson);
-}
-
-// ========== ОБРАБОТКА КОМАНД ==========
-void handleCommand(uint8_t command) {
-  Serial.printf("📨 Получена команда: 0x%02X\n", command);
-  
-  switch (command) {
-    case 0x01:  // Перекалибровка
-      Serial.println("🔄 Команда: Перекалибровка");
-      forceRecalibration();
-      break;
-      
-    case 0x02:  // Сброс настроек
-      Serial.println("🗑️ Команда: Сброс настроек");
-      {
-        Preferences prefs;
-        prefs.begin("vibemon", false);
-        prefs.clear();
-        prefs.end();
-      }
-      forceRecalibration();
-      break;
-      
-    case 0x03:  // Перезагрузка
-      Serial.println("🔌 Команда: Перезагрузка");
-      if (wifiMode && wifiClient.connected()) {
-        wifiClient.stop();
-      }
-      delay(500);
-      ESP.restart();
-      break;
-      
-    default:
-      Serial.printf("❓ Неизвестная команда: 0x%02X\n", command);
-  }
-}
-
 // ========== ОСНОВНОЙ ЦИКЛ ==========
 void loop() {
   unsigned long currentTime = millis();
-  
-  // Обработка WiFi клиента
-  if (wifiMode) {
-    if (!wifiClient.connected()) {
-      wifiClient = wifiServer.available();
-      if (wifiClient) {
-        Serial.println("✓ WiFi клиент подключен: " + wifiClient.remoteIP().toString());
-        deviceConnected = true;
-        digitalWrite(LED_PIN, HIGH);
-      } else {
-        deviceConnected = false;
-      }
-    } else {
-      // Проверка команд от клиента
-      if (wifiClient.available()) {
-        uint8_t cmd = wifiClient.read();
-        handleCommand(cmd);
-      }
-    }
-  }
   
   // Сбор данных и FFT анализ
   collectSamples();
@@ -863,11 +716,7 @@ void loop() {
     printStatus();
     
     if (deviceConnected) {
-      if (wifiMode) {
-        sendWiFiData();
-      } else {
-        sendBLEData();
-      }
+      sendBLEData();
     }
     
     // Мигание LED по статусу
