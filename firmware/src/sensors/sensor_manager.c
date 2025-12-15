@@ -44,8 +44,35 @@ static void (*continuous_callback)(sensor_data_t *data) = NULL;
 // Private Functions
 // ===========================================
 
-static float calculate_rms(float x, float y, float z) {
-    return sqrtf(x*x + y*y + z*z);
+// ВАЖНО: MPU6050 возвращает ускорение в "g" по осям.
+// Если брать sqrt(ax^2+ay^2+az^2), то в покое получится ~1g (гравитация),
+// и метрика почти не будет меняться даже при тряске/поворотах.
+// Поэтому сначала оцениваем вектор гравитации НЧ-фильтром и вычитаем его
+// (получаем динамическую составляющую вибрации), затем считаем модуль.
+static float calculate_dynamic_vibration_g(float ax, float ay, float az) {
+    // NЧ фильтр гравитации (alpha ближе к 1 => более медленная адаптация)
+    // При sample rate ~100 Гц alpha=0.99 даёт частоту среза порядка ~0.16 Гц.
+    const float alpha = 0.99f;
+
+    static bool gravity_initialized = false;
+    static float gx = 0.0f, gy = 0.0f, gz = 1.0f;
+
+    if (!gravity_initialized) {
+        gx = ax;
+        gy = ay;
+        gz = az;
+        gravity_initialized = true;
+    } else {
+        gx = alpha * gx + (1.0f - alpha) * ax;
+        gy = alpha * gy + (1.0f - alpha) * ay;
+        gz = alpha * gz + (1.0f - alpha) * az;
+    }
+
+    const float dx = ax - gx;
+    const float dy = ay - gy;
+    const float dz = az - gz;
+
+    return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
 static uint8_t voltage_to_percent(float voltage) {
@@ -172,10 +199,13 @@ esp_err_t sensor_manager_read(sensor_data_t *data) {
             data->gyro_y = mpu_data.gyro_y;
             data->gyro_z = mpu_data.gyro_z;
             
-            // Calculate vibration metrics
-            data->vibration_rms = calculate_rms(data->accel_x, data->accel_y, data->accel_z);
-            data->vibration_peak = fmaxf(fmaxf(fabsf(data->accel_x), fabsf(data->accel_y)), 
-                                         fabsf(data->accel_z));
+            // Calculate vibration metrics (динамическая составляющая без гравитации)
+            data->vibration_rms = calculate_dynamic_vibration_g(data->accel_x, data->accel_y, data->accel_z);
+
+            // Peak по динамической составляющей (приближённо)
+            // Для простоты используем отклонения от оценённой гравитации через два вызова:
+            // сохраняем peak как максимум мгновенного модуля динамики.
+            data->vibration_peak = fmaxf(data->vibration_peak, data->vibration_rms);
         } else {
             error_count++;
             data->flags |= ALERT_FLAG_SENSOR_ERROR;
@@ -227,9 +257,8 @@ esp_err_t sensor_manager_read_vibration(sensor_data_t *data) {
     data->gyro_x = mpu_data.gyro_x;
     data->gyro_y = mpu_data.gyro_y;
     data->gyro_z = mpu_data.gyro_z;
-    data->vibration_rms = calculate_rms(data->accel_x, data->accel_y, data->accel_z);
-    data->vibration_peak = fmaxf(fmaxf(fabsf(data->accel_x), fabsf(data->accel_y)), 
-                                 fabsf(data->accel_z));
+    data->vibration_rms = calculate_dynamic_vibration_g(data->accel_x, data->accel_y, data->accel_z);
+    data->vibration_peak = fmaxf(data->vibration_peak, data->vibration_rms);
     
     return ESP_OK;
 }
