@@ -362,11 +362,19 @@ void initWiFi() {
 // Убирает DC offset (постоянную составляющую/гравитацию)
 // Использует IIR фильтр первого порядка
 
-// Калибровочное значение гравитации (будет загружено из памяти или измерено)
-float gravityOffset = 9.81;
+// Оценка вектора гравитации (м/с²) + флаг калибровки
+// ВАЖНО: Нельзя считать вибрацию как sqrt(ax^2+ay^2+az^2) — это почти всегда ~9.81 и слабо меняется при тряске/поворотах.
+// Правильно: оценить гравитацию по осям НЧ-фильтром и вычитать её (получаем линейное ускорение).
+float gravityX = 0.0;
+float gravityY = 0.0;
+float gravityZ = 9.81;
+bool gravityInitialized = false;
+
 bool calibrated = false;
 int calibrationSamples = 0;
-float calibrationSum = 0;
+float calibrationSumX = 0;
+float calibrationSumY = 0;
+float calibrationSumZ = 0;
 
 // Хранилище калибровки
 Preferences preferences;
@@ -374,32 +382,44 @@ Preferences preferences;
 // Загрузка калибровки из памяти
 void loadCalibration() {
   preferences.begin("vibemon", true);  // read-only
-  float saved = preferences.getFloat("gravity", 0);
+  float savedX = preferences.getFloat("gx", NAN);
+  float savedY = preferences.getFloat("gy", NAN);
+  float savedZ = preferences.getFloat("gz", NAN);
   preferences.end();
   
-  if (saved > 8.0 && saved < 12.0) {  // Валидное значение (около 9.81)
-    gravityOffset = saved;
+  if (isfinite(savedX) && isfinite(savedY) && isfinite(savedZ) &&
+      savedZ > 6.0 && savedZ < 14.0) {  // грубая валидация
+    gravityX = savedX;
+    gravityY = savedY;
+    gravityZ = savedZ;
+    gravityInitialized = true;
     calibrated = true;
-    Serial.printf("✓ Калибровка загружена из памяти: %.3f m/s²\n", gravityOffset);
+    Serial.printf("✓ Калибровка загружена из памяти: g=(%.3f, %.3f, %.3f) m/s²\n", gravityX, gravityY, gravityZ);
   } else {
     Serial.println("⚠ Калибровка не найдена, требуется новая калибровка");
     calibrated = false;
+    gravityInitialized = false;
   }
 }
 
 // Сохранение калибровки в память
 void saveCalibration() {
   preferences.begin("vibemon", false);  // read-write
-  preferences.putFloat("gravity", gravityOffset);
+  preferences.putFloat("gx", gravityX);
+  preferences.putFloat("gy", gravityY);
+  preferences.putFloat("gz", gravityZ);
   preferences.end();
-  Serial.printf("💾 Калибровка сохранена: %.3f m/s²\n", gravityOffset);
+  Serial.printf("💾 Калибровка сохранена: g=(%.3f, %.3f, %.3f) m/s²\n", gravityX, gravityY, gravityZ);
 }
 
 // Принудительная перекалибровка (вызывать при необходимости)
 void forceRecalibration() {
   calibrated = false;
   calibrationSamples = 0;
-  calibrationSum = 0;
+  calibrationSumX = 0;
+  calibrationSumY = 0;
+  calibrationSumZ = 0;
+  gravityInitialized = false;
   Serial.println("🔄 Запущена перекалибровка...");
 }
 
@@ -414,14 +434,19 @@ float removeOffset(float input, float& prevInput, float& prevOutput) {
 }
 
 // Калибровка - измеряем среднее значение в покое
-void calibrateGravity(float magnitude) {
+void calibrateGravity(float ax, float ay, float az) {
   if (!calibrated) {
-    calibrationSum += magnitude;
+    calibrationSumX += ax;
+    calibrationSumY += ay;
+    calibrationSumZ += az;
     calibrationSamples++;
     if (calibrationSamples >= 500) {
-      gravityOffset = calibrationSum / calibrationSamples;
+      gravityX = calibrationSumX / calibrationSamples;
+      gravityY = calibrationSumY / calibrationSamples;
+      gravityZ = calibrationSumZ / calibrationSamples;
+      gravityInitialized = true;
       calibrated = true;
-      Serial.printf("✓ Калибровка завершена: gravity = %.3f m/s²\n", gravityOffset);
+      Serial.printf("✓ Калибровка завершена: g=(%.3f, %.3f, %.3f) m/s²\n", gravityX, gravityY, gravityZ);
       saveCalibration();  // Сохраняем в память!
     }
   }
@@ -442,22 +467,31 @@ void collectSamples() {
     if (mpuAvailable) {
       sensors_event_t a, g, temp;
       mpu.getEvent(&a, &g, &temp);
-      
-      // Вычисляем общую амплитуду ускорения
-      float magnitude = sqrt(
-        a.acceleration.x * a.acceleration.x +
-        a.acceleration.y * a.acceleration.y +
-        a.acceleration.z * a.acceleration.z
-      );
-      
-      // Калибровка при первом запуске
-      calibrateGravity(magnitude);
-      
-      // Удаляем гравитацию (вычитаем калиброванное значение)
-      float withoutGravity = magnitude - gravityOffset;
-      
+
+      // Калибровка вектора гравитации при первом запуске (держать неподвижно)
+      calibrateGravity(a.acceleration.x, a.acceleration.y, a.acceleration.z);
+
+      // НЧ-фильтр для оценки гравитации (адаптируется к медленным изменениям ориентации)
+      const float alphaG = 0.99; // ~100 Гц: срез порядка десятых Гц
+      if (!gravityInitialized) {
+        gravityX = a.acceleration.x;
+        gravityY = a.acceleration.y;
+        gravityZ = a.acceleration.z;
+        gravityInitialized = true;
+      } else {
+        gravityX = alphaG * gravityX + (1.0 - alphaG) * a.acceleration.x;
+        gravityY = alphaG * gravityY + (1.0 - alphaG) * a.acceleration.y;
+        gravityZ = alphaG * gravityZ + (1.0 - alphaG) * a.acceleration.z;
+      }
+
+      // Линейное ускорение (динамика) без гравитации
+      float linX = a.acceleration.x - gravityX;
+      float linY = a.acceleration.y - gravityY;
+      float linZ = a.acceleration.z - gravityZ;
+      float linearMag = sqrt(linX * linX + linY * linY + linZ * linZ);
+
       // Дополнительный ВЧ фильтр для удаления остаточного DC
-      float filtered = removeOffset(withoutGravity, prevInput, prevOutput);
+      float filtered = removeOffset(linearMag, prevInput, prevOutput);
       
       vReal[i] = filtered;
       vImag[i] = 0;
@@ -695,7 +729,7 @@ void printStatus() {
   Serial.printf("  Crest Factor: %.2f\n", vibData.crestFactor);
   Serial.printf("  Дом. частота: %.1f Гц (амплитуда: %.4f)\n", vibData.dominantFreq, vibData.dominantAmp);
   Serial.printf("  Температура: %.1f°C\n", temperature);
-  Serial.printf("  Gravity offset: %.3f м/с²\n", gravityOffset);
+  Serial.printf("  Gravity: (%.3f, %.3f, %.3f) м/с²\n", gravityX, gravityY, gravityZ);
   
   if (wifiMode) {
     if (deviceConnected) {
